@@ -1,7 +1,0 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="700" viewBox="0 0 1200 700" role="img" aria-label="AgentPort wordmark">
-  <rect width="1200" height="700" fill="#05070B"/>
-  <g font-family="DM Sans, Inter, Segoe UI, Arial, sans-serif" font-weight="800">
-    <text x="350" y="310" font-size="155" letter-spacing="-5" fill="#F5F5F6">agent</text>
-    <text x="350" y="460" font-size="150" letter-spacing="-5" fill="#7B61FF">port_</text>
-  </g>
-</svg>
