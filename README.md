@@ -1,12 +1,14 @@
 # Public Tools
 
-A small collection of free public tools by Elliot / ZURA VFX.
+A collection of free public tools by Elliot / ZURA VFX.
 
 ## Tools
 
 ### AgentPort
 
-A Windows desktop app for running local GGUF models through TextGen and connecting them into DeepSeek Harness-style agent workflows.
+A Windows desktop app for running local GGUF models through TextGen and connecting them into agent-style workflows.
 
-- [AgentPort README](./AgentPort/README.md)
-- [Download latest EXE](./AgentPort/releases/AgentPort_v1.5.0.exe)
+- [Read the AgentPort guide](./AgentPort/README.md)
+- [Download AgentPort v1.5.0](./AgentPort/releases/AgentPort_v1.5.0.exe)
+
+![AgentPort preview](./AgentPort/assets/ui-preview.svg)
