@@ -1,10 +1,30 @@
-# AgentPort
+# Public Tools
+
+Free tools by **ZURAVFX / Elliot Mckenzie**.
+
+## Web2AE
+
+**Turn a live webpage into editable After Effects layers.**
+
+Web2AE captures the page you are actually viewing in Chrome, Edge or Firefox and rebuilds the visible viewport in Adobe After Effects using editable text, native shapes, image/raster elements and sensible groups wherever practical.
+
+- Free and open source
+- Local-only
+- No API keys or subscription
+- Chrome / Edge / Firefox
+- Adobe After Effects 2024+
+
+**Project:** [`Web2AE/`](Web2AE/)
+
+---
+
+## AgentPort
 
 AgentPort connects **local GGUF AI models** to **DeepSeek Harness** on Windows.
 
 It gives you one simple desktop app for launching TextGen, loading a local model, checking whether it should fit your GPU, and wiring that model into DeepSeek Harness without manually editing config files or juggling launch scripts.
 
-## Download
+### Download
 
 Download the latest build from the repo releases folder once uploaded:
 
@@ -14,7 +34,7 @@ releases/AgentPort_v1.5.0.exe
 
 For GitHub's cleaner download experience, create a GitHub Release called **AgentPort v1.5.0** and attach the EXE there.
 
-## What it does
+### What it does
 
 - Starts and manages TextGen for local GGUF inference
 - Connects the selected local model to DeepSeek Harness
@@ -25,7 +45,7 @@ For GitHub's cleaner download experience, create a GitHub Release called **Agent
 - Lets you offload models from VRAM
 - Keeps DeepSeek Harness skills isolated in their own folder
 
-## Quick start
+### Quick start
 
 1. Download `AgentPort_v1.5.0.exe`.
 2. Double-click it.
@@ -35,7 +55,7 @@ For GitHub's cleaner download experience, create a GitHub Release called **Agent
 
 On a fresh PC, first launch needs internet because AgentPort has to download runtime components and any models you choose.
 
-## Startup phases
+### Startup phases
 
 When you press **Apply & Start**, AgentPort walks through:
 
@@ -49,7 +69,7 @@ When you press **Apply & Start**, AgentPort walks through:
 
 If something fails, check the log panel inside AgentPort. It should show the exact stage and recent error output.
 
-## GPU / RAM fit feedback
+### GPU / RAM fit feedback
 
 AgentPort estimates memory use from:
 
@@ -61,14 +81,14 @@ AgentPort estimates memory use from:
 
 This is a practical launch guide, not a benchmark. It helps you avoid obviously bad model/context combinations before starting TextGen.
 
-## Default ports
+### Default ports
 
 | Component | Port |
 |---|---:|
 | TextGen API | `5100` |
 | DeepSeek Harness UI | `3080` |
 
-## Files and settings
+### Files and settings
 
 AgentPort stores persistent settings here:
 
@@ -82,7 +102,7 @@ DeepSeek Harness-only skills live here:
 %USERPROFILE%\.dsh\harness_skills
 ```
 
-## Notes
+### Notes
 
 - Windows only.
 - Models are not included.
