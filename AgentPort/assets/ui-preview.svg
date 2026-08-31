@@ -1,0 +1,67 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="900" viewBox="0 0 1400 900" role="img" aria-label="AgentPort UI preview">
+  <rect width="1400" height="900" rx="34" fill="#080B10"/>
+  <rect x="1" y="1" width="1398" height="898" rx="34" fill="none" stroke="#242A33"/>
+  <rect x="0" y="0" width="235" height="900" fill="#090C11"/>
+  <line x1="235" y1="0" x2="235" y2="900" stroke="#242A33"/>
+
+  <g font-family="DM Sans, Inter, Segoe UI, Arial, sans-serif">
+    <g font-weight="800" font-size="58">
+      <text x="42" y="95" fill="#F5F5F6">agent</text>
+      <text x="42" y="148" fill="#7B61FF">port_</text>
+    </g>
+
+    <rect x="28" y="188" width="180" height="58" rx="14" fill="#211B42" stroke="#7B61FF"/>
+    <text x="84" y="225" fill="#F5F5F6" font-size="19" font-weight="600">Home</text>
+    <text x="84" y="296" fill="#B8BAC3" font-size="18">Models</text>
+    <text x="84" y="362" fill="#B8BAC3" font-size="18">Runtimes</text>
+    <text x="84" y="428" fill="#B8BAC3" font-size="18">Skills</text>
+    <text x="84" y="494" fill="#B8BAC3" font-size="18">Settings</text>
+
+    <rect x="28" y="635" width="180" height="140" rx="14" fill="#0D1117" stroke="#2B313B"/>
+    <circle cx="55" cy="665" r="6" fill="#7B61FF"/>
+    <text x="72" y="671" fill="#F5F5F6" font-size="15">Runtimes Active</text>
+    <text x="44" y="714" fill="#F5F5F6" font-size="15">TextGen</text>
+    <text x="152" y="714" fill="#7B61FF" font-size="15">:5100</text>
+    <circle cx="202" cy="708" r="5" fill="#4EEA74"/>
+    <text x="44" y="752" fill="#F5F5F6" font-size="15">Harness</text>
+    <text x="152" y="752" fill="#7B61FF" font-size="15">:3080</text>
+    <circle cx="202" cy="746" r="5" fill="#4EEA74"/>
+
+    <text x="290" y="76" fill="#F5F5F6" font-size="34" font-weight="700">Hi, Elliot</text>
+    <text x="290" y="110" fill="#9A9AA4" font-size="17">Ready to run your local models.</text>
+
+    <rect x="290" y="150" width="1060" height="185" rx="18" fill="#0D1117" stroke="#2B313B"/>
+    <rect x="840" y="150" width="510" height="185" rx="18" fill="#151438" opacity="0.75"/>
+    <text x="330" y="205" fill="#F5F5F6" font-size="18">Current Runtime</text>
+    <text x="330" y="258" fill="#F5F5F6" font-size="36" font-weight="700">Qwen3.8-27B-Q4_K_M.gguf</text>
+    <rect x="330" y="290" width="190" height="42" rx="10" fill="#0B0F14" stroke="#2B313B"/>
+    <text x="360" y="317" fill="#F5F5F6" font-size="15">49,152 token context</text>
+    <rect x="540" y="290" width="230" height="42" rx="10" fill="#0B0F14" stroke="#2B313B"/>
+    <text x="570" y="317" fill="#F5F5F6" font-size="15">Auto Fit Recommended</text>
+    <rect x="790" y="290" width="170" height="42" rx="10" fill="#0B0F14" stroke="#2B313B"/>
+    <text x="820" y="317" fill="#F5F5F6" font-size="15">TextGen API :5100</text>
+    <rect x="1210" y="285" width="94" height="42" rx="12" fill="#11351F"/>
+    <circle cx="1233" cy="306" r="6" fill="#4EEA74"/>
+    <text x="1250" y="313" fill="#4EEA74" font-size="16">Ready</text>
+
+    <rect x="290" y="355" width="1060" height="335" rx="18" fill="#0D1117" stroke="#2B313B"/>
+    <text x="330" y="404" fill="#F5F5F6" font-size="18" font-weight="600">Runtime Configuration</text>
+    <g fill="#F5F5F6" font-size="15">
+      <text x="330" y="455">Model</text><text x="665" y="455">Context Length</text><text x="1000" y="455">GPU Offload</text>
+      <text x="330" y="570">KV Cache</text><text x="665" y="570">Speculative Decoding</text><text x="1000" y="570">Max New Tokens</text>
+    </g>
+    <g fill="#0B0F14" stroke="#2B313B">
+      <rect x="330" y="470" width="290" height="50" rx="10"/><rect x="665" y="470" width="300" height="50" rx="10"/><rect x="1000" y="470" width="300" height="50" rx="10"/>
+      <rect x="330" y="585" width="290" height="50" rx="10"/><rect x="665" y="585" width="300" height="50" rx="10"/><rect x="1000" y="585" width="300" height="50" rx="10"/>
+    </g>
+    <g fill="#F5F5F6" font-size="16">
+      <text x="350" y="502">Qwen3.8-27B-Q4_K_M.gguf</text><text x="685" y="502">49,152 Auto</text><text x="1020" y="502">Auto Fit Recommended</text>
+      <text x="350" y="617">Auto</text><text x="685" y="617">Medium</text><text x="1020" y="617">2048</text>
+    </g>
+
+    <rect x="290" y="715" width="820" height="62" rx="14" fill="#7B61FF"/>
+    <text x="655" y="754" fill="#FFFFFF" font-size="22" font-weight="700">Apply &amp; Start</text>
+    <rect x="1135" y="715" width="215" height="62" rx="14" fill="#0D1117" stroke="#2B313B"/>
+    <text x="1185" y="754" fill="#F5F5F6" font-size="18">Saved Profiles</text>
+  </g>
+</svg>
