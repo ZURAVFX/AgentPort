@@ -4,20 +4,28 @@ AgentPort connects **local GGUF AI models** to **DeepSeek Harness** on Windows.
 
 It gives you one desktop app for setting up TextGen, choosing a local model, checking GPU/RAM fit, and wiring that model into DeepSeek Harness without manually editing config files or juggling launch scripts.
 
-## Current focus
+## Status
 
-The next build is focused on making setup much more obvious:
+**Current downloadable build:** `v1.5.0`
 
-- clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
-- one-click install buttons for TextGen and DeepSeek Harness
-- automatic model discovery from common local AI tools
-- clearer handling for GGUF models that need helper files like `mmproj`
-- a simpler Skills page with obvious add/import buttons
-- cleaner startup phase text with no broken symbols
+**Next planned build:** `v1.6.0` — setup, installer and model-discovery improvements.
+
+The `v1.6.0` work is currently tracked in the repo so the installer flow can be fixed properly before a new EXE is released.
+
+## What v1.6.0 is fixing
+
+- Clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
+- Simple buttons for **Install TextGen**, **Repair TextGen**, **Install DeepSeek Harness** and **Repair DeepSeek Harness**
+- Fixed startup text, so phase labels do not show broken characters like `Â·`
+- Better DeepSeek Harness install/startup checks
+- Better TextGen install/startup checks
+- Automatic model discovery from common local AI tools
+- Clearer handling for GGUF models that need helper files like `mmproj`
+- A simpler Skills page with obvious add/import/create buttons
 
 See: [`docs/v1.6-setup-and-discovery.md`](./docs/v1.6-setup-and-discovery.md)
 
-## What it does
+## What AgentPort does
 
 - Starts and manages TextGen for local GGUF inference
 - Connects the selected local model to DeepSeek Harness
@@ -30,28 +38,33 @@ See: [`docs/v1.6-setup-and-discovery.md`](./docs/v1.6-setup-and-discovery.md)
 
 ## Download
 
-Download the latest build from the **Releases** section.
+Download the current build from the **Releases** section.
 
-If needed, the executable can also live in:
+Current build:
 
 ```text
-releases/AgentPort_v1.5.0.exe
+AgentPort_v1.5.0.exe
+```
+
+The next EXE should be released as:
+
+```text
+AgentPort_v1.6.0.exe
 ```
 
 ## Quick start
 
-1. Download `AgentPort_v1.5.0.exe`
+1. Download the latest AgentPort EXE
 2. Double-click it
-3. Open the setup/status area and confirm TextGen + DeepSeek Harness are installed
-4. Pick or discover a GGUF model
-5. Choose context length and GPU offload mode
-6. Press **Apply & Start**
+3. Pick or download a GGUF model
+4. Choose context length and GPU offload mode
+5. Press **Apply & Start**
 
 On a fresh PC, first launch needs internet because AgentPort has to download runtime components and any models you choose.
 
 ## Startup phases
 
-When you press **Apply & Start**, AgentPort should walk through clean phase labels:
+When you press **Apply & Start**, AgentPort walks through:
 
 1. **Preflight** — checks paths, model choice and runtime state
 2. **Prepare runtime** — writes TextGen and DeepSeek Harness settings
@@ -61,21 +74,19 @@ When you press **Apply & Start**, AgentPort should walk through clean phase labe
 6. **Start Harness** — launches DeepSeek Harness
 7. **Ready** — opens the local Harness page
 
-If something fails, the log panel should show the exact stage and recent error output.
+If something fails, check the log panel inside AgentPort. It should show the exact stage and recent error output.
 
-## Model discovery
+## GPU / RAM fit feedback
 
-AgentPort should search common local model locations used by tools like:
+AgentPort estimates memory use from:
 
-- AgentPort / TextGen
-- LM Studio
-- Ollama
-- Unsloth Studio
-- Hugging Face cache
-- Jan
-- GPT4All
+- model file size
+- context length
+- KV cache type
+- selected GPU offload mode
+- detected VRAM and system RAM
 
-Discovered models should be shown with their source app, file path, size, and whether any helper files were detected.
+This is a practical launch guide, not a benchmark. It helps you avoid obviously bad model/context combinations before starting TextGen.
 
 ## Default ports
 
