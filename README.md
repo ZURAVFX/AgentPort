@@ -2,7 +2,20 @@
 
 AgentPort connects **local GGUF AI models** to **DeepSeek Harness** on Windows.
 
-It gives you one simple desktop app for launching TextGen, loading a local model, checking whether it should fit your GPU, and wiring that model into DeepSeek Harness without manually editing config files or juggling launch scripts.
+It gives you one desktop app for setting up TextGen, choosing a local model, checking GPU/RAM fit, and wiring that model into DeepSeek Harness without manually editing config files or juggling launch scripts.
+
+## Current focus
+
+The next build is focused on making setup much more obvious:
+
+- clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
+- one-click install buttons for TextGen and DeepSeek Harness
+- automatic model discovery from common local AI tools
+- clearer handling for GGUF models that need helper files like `mmproj`
+- a simpler Skills page with obvious add/import buttons
+- cleaner startup phase text with no broken symbols
+
+See: [`docs/v1.6-setup-and-discovery.md`](./docs/v1.6-setup-and-discovery.md)
 
 ## What it does
 
@@ -29,15 +42,16 @@ releases/AgentPort_v1.5.0.exe
 
 1. Download `AgentPort_v1.5.0.exe`
 2. Double-click it
-3. Pick or download a GGUF model
-4. Choose context length and GPU offload mode
-5. Press **Apply & Start**
+3. Open the setup/status area and confirm TextGen + DeepSeek Harness are installed
+4. Pick or discover a GGUF model
+5. Choose context length and GPU offload mode
+6. Press **Apply & Start**
 
 On a fresh PC, first launch needs internet because AgentPort has to download runtime components and any models you choose.
 
 ## Startup phases
 
-When you press **Apply & Start**, AgentPort walks through:
+When you press **Apply & Start**, AgentPort should walk through clean phase labels:
 
 1. **Preflight** — checks paths, model choice and runtime state
 2. **Prepare runtime** — writes TextGen and DeepSeek Harness settings
@@ -47,19 +61,21 @@ When you press **Apply & Start**, AgentPort walks through:
 6. **Start Harness** — launches DeepSeek Harness
 7. **Ready** — opens the local Harness page
 
-If something fails, check the log panel inside AgentPort. It should show the exact stage and recent error output.
+If something fails, the log panel should show the exact stage and recent error output.
 
-## GPU / RAM fit feedback
+## Model discovery
 
-AgentPort estimates memory use from:
+AgentPort should search common local model locations used by tools like:
 
-- model file size
-- context length
-- KV cache type
-- selected GPU offload mode
-- detected VRAM and system RAM
+- AgentPort / TextGen
+- LM Studio
+- Ollama
+- Unsloth Studio
+- Hugging Face cache
+- Jan
+- GPT4All
 
-This is a practical launch guide, not a benchmark. It helps you avoid obviously bad model/context combinations before starting TextGen.
+Discovered models should be shown with their source app, file path, size, and whether any helper files were detected.
 
 ## Default ports
 
