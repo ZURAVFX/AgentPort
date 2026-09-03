@@ -1,2 +1,0 @@
-34dfb667b9235d81118d8d5ef293665a4c3a798bdeafced95e7a054521684934  AgentPort_v1.6.0.exe
-cd6d92fbd147cc20af25246bae6cca08e6f8811af7e10cca1ceb8e5f575990f3  AgentPort_v1.6.0.cmd
