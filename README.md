@@ -4,49 +4,22 @@ AgentPort connects **local GGUF AI models** to **DeepSeek Harness** on Windows.
 
 It gives you one desktop app for setting up TextGen, choosing a local model, checking GPU/RAM fit, and wiring that model into DeepSeek Harness without manually editing config files or juggling launch scripts.
 
-## Status
+## Current release
 
-**Current downloadable build:** `v1.5.0`
+**v1.6.0** focuses on first-run setup and discovery.
 
-**Next planned build:** `v1.6.0` — setup, installer and model-discovery improvements.
-
-The `v1.6.0` work is currently tracked in the repo so the installer flow can be fixed properly before a new EXE is released.
-
-## What v1.6.0 is fixing
-
-- Clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
-- Simple buttons for **Install TextGen**, **Repair TextGen**, **Install DeepSeek Harness** and **Repair DeepSeek Harness**
-- Fixed startup text, so phase labels do not show broken characters like `Â·`
-- Better DeepSeek Harness install/startup checks
-- Better TextGen install/startup checks
-- Automatic model discovery from common local AI tools
-- Clearer handling for GGUF models that need helper files like `mmproj`
-- A simpler Skills page with obvious add/import/create buttons
-
-See: [`docs/v1.6-setup-and-discovery.md`](./docs/v1.6-setup-and-discovery.md)
-
-## What AgentPort does
-
-- Starts and manages TextGen for local GGUF inference
-- Connects the selected local model to DeepSeek Harness
-- Shows GPU / RAM fit feedback before launch
-- Gives clear startup progress and failure stages
-- Lets you select model, context length, KV cache and offload mode
-- Supports Hugging Face GGUF downloads and local GGUF imports
-- Lets you offload models from VRAM
-- Keeps DeepSeek Harness skills isolated in their own folder
+- clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
+- one-click **Install** and **Repair** buttons for TextGen and DeepSeek Harness
+- automatic GGUF model discovery from AgentPort, TextGen, Ollama, LM Studio, Unsloth Studio, Hugging Face cache, Jan and GPT4All locations
+- better handling for `mmproj` helper files used by multimodal GGUF models
+- simpler Skills page with add/import/create/open/refresh actions
+- fixed broken launch phase characters, for example `Phase 6 of 7 - Starting Harness`
 
 ## Download
 
-Download the current build from the **Releases** section.
+Download the latest build from the **Releases** section.
 
-Current build:
-
-```text
-AgentPort_v1.5.0.exe
-```
-
-The next EXE should be released as:
+The current file should be:
 
 ```text
 AgentPort_v1.6.0.exe
@@ -54,48 +27,61 @@ AgentPort_v1.6.0.exe
 
 ## Quick start
 
-1. Download the latest AgentPort EXE
-2. Double-click it
-3. Pick or download a GGUF model
-4. Choose context length and GPU offload mode
-5. Press **Apply & Start**
+1. Download `AgentPort_v1.6.0.exe`.
+2. Open **Settings** and check the TextGen / DeepSeek Harness flags.
+3. Use **Install TextGen** and **Install Harness** if either is missing.
+4. Press **Scan for models** or download/import a GGUF model.
+5. Choose context length, KV cache and GPU offload mode.
+6. Press **Apply & Start**.
 
-On a fresh PC, first launch needs internet because AgentPort has to download runtime components and any models you choose.
+First launch needs internet because TextGen, DeepSeek Harness and local models can be large downloads.
 
-## Startup phases
+## What AgentPort manages
 
-When you press **Apply & Start**, AgentPort walks through:
+- TextGen local API on port `5100`
+- DeepSeek Harness UI on port `3080`
+- GGUF model selection
+- context length and KV cache
+- GPU offload mode
+- basic GPU/RAM fit checks
+- model import and Hugging Face GGUF download flow
+- Harness-only skills folder
+- runtime logs and process cleanup
 
-1. **Preflight** — checks paths, model choice and runtime state
-2. **Prepare runtime** — writes TextGen and DeepSeek Harness settings
-3. **Start TextGen** — starts the local model server
-4. **Wait for API** — waits for TextGen on port `5100`
-5. **Verify model** — confirms the selected GGUF is actually loaded
-6. **Start Harness** — launches DeepSeek Harness
-7. **Ready** — opens the local Harness page
+## Model discovery
 
-If something fails, check the log panel inside AgentPort. It should show the exact stage and recent error output.
+AgentPort scans common local AI model locations, including:
 
-## GPU / RAM fit feedback
+- AgentPort model folder
+- TextGen `user_data/models`
+- Ollama default and `OLLAMA_MODELS`
+- LM Studio defaults and detected config paths
+- Unsloth Studio defaults and `UNSLOTH_STUDIO_HOME`
+- Hugging Face cache via `HF_HOME` / `HF_HUB_CACHE`
+- Jan model folders
+- GPT4All model folders
 
-AgentPort estimates memory use from:
+External GGUF models can be launched in place. AgentPort also looks beside a selected model for `mmproj*.gguf` helper files and passes them to TextGen when found.
 
-- model file size
-- context length
-- KV cache type
-- selected GPU offload mode
-- detected VRAM and system RAM
+## Skills
 
-This is a practical launch guide, not a benchmark. It helps you avoid obviously bad model/context combinations before starting TextGen.
+The Skills page is for **DeepSeek Harness-only skills**.
 
-## Default ports
+You can:
 
-| Component | Port |
-|---|---:|
-| TextGen API | `5100` |
-| DeepSeek Harness UI | `3080` |
+- add an existing skill folder
+- import a skill ZIP
+- create a blank `skill.md` template
+- open the skills folder
+- refresh the installed list
 
-## Files and settings
+Skills are stored separately so AgentPort does not inject another agent catalogue into DeepSeek Harness.
+
+```text
+%USERPROFILE%\.dsh\harness_skills
+```
+
+## Settings and files
 
 AgentPort stores persistent settings here:
 
@@ -103,18 +89,20 @@ AgentPort stores persistent settings here:
 %USERPROFILE%\.dsh
 ```
 
-DeepSeek Harness-only skills live here:
+Main local runtime folders default to:
 
 ```text
-%USERPROFILE%\.dsh\harness_skills
+%PUBLIC%\AgentPort\textgen
+%PUBLIC%\AgentPort\models
+%LOCALAPPDATA%\AgentPort\harness-workspace
 ```
 
 ## Notes
 
-- Windows only
-- Models are not included
-- GGUF models can be downloaded or imported through AgentPort
-- Large models and runtimes can take a while to download
+- Windows only.
+- Models are not included.
+- Large models and runtimes can take a while to download.
+- The GPU/RAM estimate is a launch guide, not a benchmark.
 
 ## Licence
 
