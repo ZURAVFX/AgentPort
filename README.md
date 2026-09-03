@@ -17,13 +17,11 @@ It gives you one desktop app for setting up TextGen, choosing a local model, che
 
 ## Download
 
-Download the latest build from the **Releases** section.
+**[Download AgentPort v1.6.0 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v1.6.0/AgentPort_v1.6.0.exe)**
 
-The current file should be:
+[View the v1.6.0 release notes](https://github.com/ZURAVFX/AgentPort/releases/tag/v1.6.0)
 
-```text
-AgentPort_v1.6.0.exe
-```
+SHA-256 checksums are included with the release.
 
 ## Quick start
 
