@@ -6,31 +6,38 @@ It gives you one desktop app for setting up TextGen, choosing a local model, che
 
 ## Current release
 
-**v1.6.0** focuses on first-run setup and discovery.
+**v1.6.1** is the current Windows build.
+
+It includes the v1.6 setup/discovery update plus a startup hotfix for the standalone EXE:
 
 - clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
 - one-click **Install** and **Repair** buttons for TextGen and DeepSeek Harness
 - automatic GGUF model discovery from AgentPort, TextGen, Ollama, LM Studio, Unsloth Studio, Hugging Face cache, Jan and GPT4All locations
 - better handling for `mmproj` helper files used by multimodal GGUF models
 - simpler Skills page with add/import/create/open/refresh actions
-- fixed broken launch phase characters, for example `Phase 6 of 7 - Starting Harness`
+- fixed broken launch phase characters
+- forces the embedded WPF runtime to Windows PowerShell STA mode
+- writes launcher diagnostics to `%LOCALAPPDATA%\AgentPort\launcher-v1.6.1.log`
+- shows a visible startup error instead of silently disappearing if the embedded runtime fails
+- smoke-tested as a packaged EXE on a Windows GitHub runner before release
 
 ## Download
 
-**[Download AgentPort v1.6.0 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v1.6.0/AgentPort_v1.6.0.exe)**
+**[Download AgentPort v1.6.1 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v1.6.1/AgentPort_v1.6.1.exe)**
 
-[View the v1.6.0 release notes](https://github.com/ZURAVFX/AgentPort/releases/tag/v1.6.0)
+[View the v1.6.1 release notes](https://github.com/ZURAVFX/AgentPort/releases/tag/v1.6.1)
 
-SHA-256 checksums are included with the release.
+The `.sha256` file is optional. You do **not** need it to install or run AgentPort; it is only provided for users who want to verify the downloaded EXE.
 
 ## Quick start
 
-1. Download `AgentPort_v1.6.0.exe`.
-2. Open **Settings** and check the TextGen / DeepSeek Harness flags.
-3. Use **Install TextGen** and **Install Harness** if either is missing.
-4. Press **Scan for models** or download/import a GGUF model.
-5. Choose context length, KV cache and GPU offload mode.
-6. Press **Apply & Start**.
+1. Download `AgentPort_v1.6.1.exe`.
+2. Double-click the EXE. No additional release files are required.
+3. Open **Settings** and check the TextGen / DeepSeek Harness flags.
+4. Use **Install TextGen** and **Install Harness** if either is missing.
+5. Press **Scan for models** or download/import a GGUF model.
+6. Choose context length, KV cache and GPU offload mode.
+7. Press **Apply & Start**.
 
 First launch needs internet because TextGen, DeepSeek Harness and local models can be large downloads.
 
@@ -93,6 +100,12 @@ Main local runtime folders default to:
 %PUBLIC%\AgentPort\textgen
 %PUBLIC%\AgentPort\models
 %LOCALAPPDATA%\AgentPort\harness-workspace
+```
+
+If AgentPort ever fails during startup, check:
+
+```text
+%LOCALAPPDATA%\AgentPort\launcher-v1.6.1.log
 ```
 
 ## Notes
