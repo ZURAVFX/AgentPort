@@ -6,36 +6,40 @@ It gives you one desktop app for setting up TextGen, choosing a local model, che
 
 ## Current release
 
-**v1.6.1** is the current Windows build.
+**v1.6.2** is the current Windows build, and the first one verified to open its window on a normal Windows 11 desktop.
 
-It includes the v1.6 setup/discovery update plus a startup hotfix for the standalone EXE:
+v1.6.2 fixes the startup failure that made v1.6.0 and v1.6.1 appear to do nothing when launched:
+
+- **Fixed the startup crash.** The model scanner passed a comma-separated list straight to `Join-Path`, which threw before the window was ever created. AgentPort now opens reliably.
+- **Home page fits on screen.** The layout was tightened and the window is clamped and centred to your screen work area, so the quick-action row is visible without scrolling and the window never opens under the taskbar.
+- **Clear helper (`mmproj`) import.** Importing a local GGUF now offers to attach a projector/helper `mmproj-*.gguf` file when one isn't found beside the model, and passes `--mmproj` automatically.
+- Correct version shown in the app footer.
+
+It keeps everything from the v1.6 setup/discovery update:
 
 - clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
 - one-click **Install** and **Repair** buttons for TextGen and DeepSeek Harness
 - automatic GGUF model discovery from AgentPort, TextGen, Ollama, LM Studio, Unsloth Studio, Hugging Face cache, Jan and GPT4All locations
-- better handling for `mmproj` helper files used by multimodal GGUF models
-- simpler Skills page with add/import/create/open/refresh actions
-- fixed broken launch phase characters
-- forces the embedded WPF runtime to Windows PowerShell STA mode
-- writes launcher diagnostics to `%LOCALAPPDATA%\AgentPort\launcher-v1.6.1.log`
-- shows a visible startup error instead of silently disappearing if the embedded runtime fails
-- smoke-tested as a packaged EXE on a Windows GitHub runner before release
+- handling for `mmproj` helper files used by multimodal GGUF models
+- simple Skills page with add / import / create / open / refresh actions
+- Windows PowerShell STA runtime with a visible startup error instead of a silent exit
+- launcher diagnostics written to `%LOCALAPPDATA%\AgentPort\launcher-v1.6.2.log`
 
 ## Download
 
-**[Download AgentPort v1.6.1 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v1.6.1/AgentPort_v1.6.1.exe)**
+**[Download AgentPort v1.6.2 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v1.6.2/AgentPort_v1.6.2.exe)**
 
-[View the v1.6.1 release notes](https://github.com/ZURAVFX/AgentPort/releases/tag/v1.6.1)
+[View the v1.6.2 release notes](https://github.com/ZURAVFX/AgentPort/releases/tag/v1.6.2)
 
 The `.sha256` file is optional. You do **not** need it to install or run AgentPort; it is only provided for users who want to verify the downloaded EXE.
 
 ## Quick start
 
-1. Download `AgentPort_v1.6.1.exe`.
+1. Download `AgentPort_v1.6.2.exe`.
 2. Double-click the EXE. No additional release files are required.
 3. Open **Settings** and check the TextGen / DeepSeek Harness flags.
 4. Use **Install TextGen** and **Install Harness** if either is missing.
-5. Press **Scan for models** or download/import a GGUF model.
+5. Press **Scan for models**, or download/import a GGUF model.
 6. Choose context length, KV cache and GPU offload mode.
 7. Press **Apply & Start**.
 
@@ -66,7 +70,7 @@ AgentPort scans common local AI model locations, including:
 - Jan model folders
 - GPT4All model folders
 
-External GGUF models can be launched in place. AgentPort also looks beside a selected model for `mmproj*.gguf` helper files and passes them to TextGen when found.
+External GGUF models can be launched in place. AgentPort also looks beside a selected model for `mmproj*.gguf` helper files and passes them to TextGen when found. When you import a model whose helper isn't adjacent, AgentPort offers to pick the `mmproj` file directly.
 
 ## Skills
 
@@ -105,8 +109,12 @@ Main local runtime folders default to:
 If AgentPort ever fails during startup, check:
 
 ```text
-%LOCALAPPDATA%\AgentPort\launcher-v1.6.1.log
+%LOCALAPPDATA%\AgentPort\launcher-v1.6.2.log
 ```
+
+## Building from source
+
+The v1.6.2 EXE is reproducible from `.release-build/v1.6.2/` (fixed PowerShell app, Go launcher, icon resource). See [`.release-build/v1.6.2/BUILD.md`](.release-build/v1.6.2/BUILD.md). CI can rebuild it from the **Build and release AgentPort v1.6.2** workflow (manual dispatch).
 
 ## Notes
 
