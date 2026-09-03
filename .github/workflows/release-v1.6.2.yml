@@ -1,0 +1,94 @@
+name: Build and release AgentPort v1.6.2
+
+# Manual trigger only. Pushing these files does NOT start a build or a release;
+# run this from the Actions tab when you want CI to rebuild v1.6.2 from source.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+          cache: false
+
+      - name: Prepare build inputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payload = '.release-build/v1.6.2'
+          $build = Join-Path $env:RUNNER_TEMP 'agentport-v1.6.2-build'
+          New-Item -ItemType Directory -Force -Path $build | Out-Null
+
+          $ps1 = Join-Path $build 'AgentPort_v1.6.2.ps1'
+          Copy-Item (Join-Path $payload 'AgentPort_v1.6.2.ps1') $ps1
+          Copy-Item (Join-Path $payload 'main.go') (Join-Path $build 'main.go')
+
+          $resourceB64 = [regex]::Replace((Get-Content (Join-Path $payload 'rsrc_amd64.syso.b64') -Raw), '\s', '')
+          [IO.File]::WriteAllBytes((Join-Path $build 'rsrc_amd64.syso'), [Convert]::FromBase64String($resourceB64))
+
+          # Parse-validate the application source before packaging.
+          $tokens = $null; $parseErrors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($ps1, [ref]$tokens, [ref]$parseErrors) | Out-Null
+          if ($parseErrors.Count -gt 0) {
+            $messages = ($parseErrors | ForEach-Object { "Line $($_.Extent.StartLineNumber): $($_.Message)" }) -join "`n"
+            throw "PowerShell parse validation failed:`n$messages"
+          }
+
+          "BUILD_DIR=$build" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Windows EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location $env:BUILD_DIR
+          go mod init github.com/ZURAVFX/AgentPort/release-build-v162
+          go build -trimpath -ldflags '-s -w -H=windowsgui' -o AgentPort_v1.6.2.exe .
+          Pop-Location
+          $exe = Get-Item (Join-Path $env:BUILD_DIR 'AgentPort_v1.6.2.exe')
+          if ($exe.Length -lt 500000) { throw "Built EXE is unexpectedly small: $($exe.Length) bytes" }
+
+      - name: Smoke test packaged EXE startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $exe = Join-Path $env:BUILD_DIR 'AgentPort_v1.6.2.exe'
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 8
+          if ($p.HasExited) {
+            $log = Join-Path $env:LOCALAPPDATA 'AgentPort\launcher-v1.6.2.log'
+            $details = if (Test-Path $log) { Get-Content $log -Raw } else { 'No launcher log was created.' }
+            throw "Packaged AgentPort EXE exited during startup. Exit $($p.ExitCode).`n$details"
+          }
+          Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+          Get-CimInstance Win32_Process -Filter "Name='powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*AgentPort-runtime-v1.6.2.ps1*' } | ForEach-Object { Invoke-CimMethod -InputObject $_ -MethodName Terminate | Out-Null }
+          Write-Host 'Note: this only checks the process survives startup. A real desktop check (window handle + interaction) is still required before trusting a release.'
+
+      - name: Prepare release files
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path releases | Out-Null
+          Copy-Item (Join-Path $env:BUILD_DIR 'AgentPort_v1.6.2.exe') 'releases/AgentPort_v1.6.2.exe' -Force
+          $sha = (Get-FileHash 'releases/AgentPort_v1.6.2.exe' -Algorithm SHA256).Hash.ToLowerInvariant()
+          $sha | Set-Content 'releases/AgentPort_v1.6.2.sha256' -Encoding ascii
+          Write-Host "AgentPort_v1.6.2.exe SHA256 $sha"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentPort-v1.6.2
+          path: |
+            releases/AgentPort_v1.6.2.exe
+            releases/AgentPort_v1.6.2.sha256
