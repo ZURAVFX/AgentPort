@@ -1,0 +1,134 @@
+name: Build and release AgentPort v1.6.0
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/release-v1.6.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  build-release:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+
+      - name: Reconstruct AgentPort v1.6.0 source and resources
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $payload = '.release-build/v1.6'
+          $build = Join-Path $env:RUNNER_TEMP 'agentport-v1.6-build'
+          New-Item -ItemType Directory -Force -Path $build | Out-Null
+
+          $parts = for ($i = 0; $i -le 9; $i++) {
+            $path = Join-Path $payload ('part_{0:D2}.txt' -f $i)
+            if (-not (Test-Path $path)) { throw "Missing source chunk: $path" }
+            (Get-Content $path -Raw).Trim()
+          }
+
+          $xz = Join-Path $build 'source.xz'
+          [IO.File]::WriteAllBytes($xz, [Convert]::FromBase64String(($parts -join '')))
+          $xzSha = (Get-FileHash $xz -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($xzSha -ne '761a3a790a1ab2933fb79f8e5d7a9298c9c2c1322050421ba44ca40d42d69178') {
+            throw "Source archive checksum mismatch: $xzSha"
+          }
+
+          $ps1 = Join-Path $build 'AgentPort_v1.6.0.ps1'
+          python -c "import lzma,pathlib; p=pathlib.Path(r'$xz'); pathlib.Path(r'$ps1').write_bytes(lzma.decompress(p.read_bytes()))"
+          $psSha = (Get-FileHash $ps1 -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($psSha -ne '1ae97d927d7a4724538e9cfe837d3306ed6e70a8c6dce6bedcecead0539991c3') {
+            throw "Reconstructed source checksum mismatch: $psSha"
+          }
+
+          Copy-Item (Join-Path $payload 'main.go') (Join-Path $build 'main.go')
+          $resourceB64 = (Get-Content (Join-Path $payload 'rsrc_amd64.syso.b64') -Raw).Trim()
+          $resource = Join-Path $build 'rsrc_amd64.syso'
+          [IO.File]::WriteAllBytes($resource, [Convert]::FromBase64String($resourceB64))
+          $resourceSha = (Get-FileHash $resource -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($resourceSha -ne 'b9ef161be858a723e37e087e4c3e32f9408fb1db755873daf1126e39723bad69') {
+            throw "Icon resource checksum mismatch: $resourceSha"
+          }
+
+          "BUILD_DIR=$build" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build Windows EXE
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Push-Location $env:BUILD_DIR
+          go mod init github.com/ZURAVFX/AgentPort/release-build
+          go build -trimpath -ldflags '-s -w -H=windowsgui' -o AgentPort_v1.6.0.exe .
+          Pop-Location
+
+          New-Item -ItemType Directory -Force -Path releases | Out-Null
+          Copy-Item (Join-Path $env:BUILD_DIR 'AgentPort_v1.6.0.exe') 'releases/AgentPort_v1.6.0.exe' -Force
+
+          $exe = Get-Item 'releases/AgentPort_v1.6.0.exe'
+          if ($exe.Length -lt 500000) { throw "Built EXE is unexpectedly small: $($exe.Length) bytes" }
+          $sha = (Get-FileHash $exe.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
+          "Built AgentPort_v1.6.0.exe - $($exe.Length) bytes - SHA256 $sha"
+          $sha | Set-Content 'releases/AgentPort_v1.6.0.sha256' -Encoding ascii
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AgentPort-v1.6.0
+          path: |
+            releases/AgentPort_v1.6.0.exe
+            releases/AgentPort_v1.6.0.sha256
+
+      - name: Commit release build to repository
+        shell: pwsh
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -f releases/AgentPort_v1.6.0.exe releases/AgentPort_v1.6.0.sha256
+          if (-not (git diff --cached --quiet)) {
+            git commit -m 'Release AgentPort v1.6.0'
+            git push origin HEAD:main
+          }
+
+      - name: Publish GitHub Release v1.6.0
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $notes = @'
+          AgentPort v1.6.0 improves first-run setup and local-model discovery.
+
+          Highlights:
+          - Installed / Missing / Needs repair status for TextGen and DeepSeek Harness
+          - Install and Repair actions for both runtimes
+          - GGUF scanning across common Ollama, LM Studio, Unsloth Studio, Hugging Face, Jan and GPT4All locations
+          - mmproj helper-file detection for multimodal GGUF models
+          - simpler skill add/import/create/open/refresh workflow
+          - fixed startup phase encoding text
+
+          AgentPort connects local GGUF AI models to DeepSeek Harness on Windows.
+          '@
+          $notes | Set-Content release-notes-v1.6.0.md -Encoding utf8
+
+          gh release view v1.6.0 *> $null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload v1.6.0 releases/AgentPort_v1.6.0.exe releases/AgentPort_v1.6.0.sha256 --clobber
+          } else {
+            gh release create v1.6.0 releases/AgentPort_v1.6.0.exe releases/AgentPort_v1.6.0.sha256 --target main --title 'AgentPort v1.6.0' --notes-file release-notes-v1.6.0.md --latest
+          }
