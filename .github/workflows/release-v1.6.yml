@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - '.github/workflows/release-v1.6.yml'
+      - '.release-build/v1.6/**'
 
 permissions:
   contents: write
@@ -29,6 +30,7 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
+          cache: false
 
       - name: Reconstruct AgentPort v1.6.0 source and resources
         shell: pwsh
@@ -41,11 +43,16 @@ jobs:
           $parts = for ($i = 0; $i -le 9; $i++) {
             $path = Join-Path $payload ('part_{0:D2}.txt' -f $i)
             if (-not (Test-Path $path)) { throw "Missing source chunk: $path" }
-            (Get-Content $path -Raw).Trim()
+            $chunk = [regex]::Replace((Get-Content $path -Raw), '\s', '')
+            if ($chunk -notmatch '^[A-Za-z0-9+/]*={0,2}$') { throw "Invalid base64 characters in $path" }
+            Write-Host "$path : $($chunk.Length) base64 characters"
+            $chunk
           }
 
+          $sourceB64 = $parts -join ''
+          if (($sourceB64.Length % 4) -ne 0) { throw "Combined source payload length is not divisible by 4: $($sourceB64.Length)" }
           $xz = Join-Path $build 'source.xz'
-          [IO.File]::WriteAllBytes($xz, [Convert]::FromBase64String(($parts -join '')))
+          [IO.File]::WriteAllBytes($xz, [Convert]::FromBase64String($sourceB64))
           $xzSha = (Get-FileHash $xz -Algorithm SHA256).Hash.ToLowerInvariant()
           if ($xzSha -ne '761a3a790a1ab2933fb79f8e5d7a9298c9c2c1322050421ba44ca40d42d69178') {
             throw "Source archive checksum mismatch: $xzSha"
@@ -59,7 +66,7 @@ jobs:
           }
 
           Copy-Item (Join-Path $payload 'main.go') (Join-Path $build 'main.go')
-          $resourceB64 = (Get-Content (Join-Path $payload 'rsrc_amd64.syso.b64') -Raw).Trim()
+          $resourceB64 = [regex]::Replace((Get-Content (Join-Path $payload 'rsrc_amd64.syso.b64') -Raw), '\s', '')
           $resource = Join-Path $build 'rsrc_amd64.syso'
           [IO.File]::WriteAllBytes($resource, [Convert]::FromBase64String($resourceB64))
           $resourceSha = (Get-FileHash $resource -Algorithm SHA256).Hash.ToLowerInvariant()
