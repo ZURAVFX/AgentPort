@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$InstallerBuild = 'ninfer-4080-installer-v5-2026-09-05'
+$InstallerBuild = 'ninfer-4080-installer-v6-2026-09-05'
 $Repo = 'https://github.com/aljazceru/ninfer.git'
 $Root = '~/.agentport'
 $Source = "$Root/ninfer-src"
@@ -14,6 +14,8 @@ $Build = "$Source/build-sm89"
 $Models = "$Root/models"
 $ModelRepo = 'aaaljaz/qwen3.8-27b-ninfer-minq4'
 $ModelFile = 'qwen3_8_27b_minq4.ninfer'
+$CudaRoot = '/usr/local/cuda-13.1'
+$Nvcc = "$CudaRoot/bin/nvcc"
 $script:Stage = 'startup'
 
 function Set-Stage {
@@ -32,11 +34,6 @@ function Convert-ToSafeText {
 
 function Invoke-WslBash {
     param([Parameter(Mandatory)][string]$Command)
-
-    # Do NOT pass multiline Bash through the Windows native command line. Windows
-    # PowerShell 5 can rewrite quotes, parentheses, semicolons and $ expansions in
-    # arguments to wsl.exe. Encode the script in PowerShell, stream only the Base64
-    # payload over stdin, decode inside Ubuntu, then execute it with Bash.
     $normalized = (Convert-ToSafeText $Command) -replace "`r", ''
     $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
     $encoded = [Convert]::ToBase64String($bytes)
@@ -68,20 +65,17 @@ try {
     Write-Host "WSL distro found: $Distro"
 
     Set-Stage '2/8 Validate RTX 4080 passthrough'
-    $gpuRaw = & wsl.exe -d $Distro -- bash -lc "nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader 2>/dev/null | head -n1"
-    $gpu = (Convert-ToSafeText $gpuRaw) -replace '^\s+|\s+$',''
+    $gpuRaw = & wsl.exe -d $Distro -- nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader
+    $gpuLines = @(Convert-ToSafeText $gpuRaw -split "`n")
+    $gpu = if($gpuLines.Count -gt 0){ $gpuLines[0] -replace '^\s+|\s+$','' }else{ '' }
     if (-not $gpu) { throw 'NVIDIA GPU is not visible inside WSL. Verify: wsl -d Ubuntu-24.04 -- nvidia-smi' }
     Write-Host "GPU: $gpu"
-    if ($gpu -notmatch 'RTX 4080') {
-        Write-Warning 'This installer is tuned for RTX 4080 / RTX 4080 SUPER (Ada sm_89).'
-    }
+    if ($gpu -notmatch 'RTX 4080') { Write-Warning 'This installer is tuned for RTX 4080 / RTX 4080 SUPER (Ada sm_89).' }
     if ($gpu -match ',\s*([0-9]+)\s*MiB') {
         $vram = [int]$Matches[1]
         if ($vram -lt 15000) { throw "Only $vram MiB VRAM detected. This profile expects a 16 GB-class GPU." }
     }
-    if ($gpu -match ',\s*([0-9]+\.[0-9]+)\s*$' -and $Matches[1] -ne '8.9') {
-        Write-Warning "Compute capability $($Matches[1]) detected. This build explicitly targets sm_89."
-    }
+    if ($gpu -match ',\s*([0-9]+\.[0-9]+)\s*$' -and $Matches[1] -ne '8.9') { Write-Warning "Compute capability $($Matches[1]) detected. This build explicitly targets sm_89." }
 
     Set-Stage '3/8 Install Linux build prerequisites'
     Invoke-WslBash @'
@@ -94,17 +88,15 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
 '@
 
     Set-Stage '4/8 Detect or install CUDA toolkit'
-    $nvccRaw = & wsl.exe -d $Distro -- bash -lc "if command -v nvcc >/dev/null 2>&1; then nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | tail -n1; fi"
-    $nvccVersion = (Convert-ToSafeText $nvccRaw) -replace '^\s+|\s+$',''
-    $needCuda = $true
-    if ($nvccVersion) {
-        Write-Host "Found CUDA toolkit nvcc $nvccVersion"
-        try { if ([version]$nvccVersion -ge [version]'12.4') { $needCuda = $false } } catch {}
-    } else {
-        Write-Host 'No nvcc found yet. This is normal on a fresh WSL install.' -ForegroundColor DarkGray
-    }
-
-    if ($needCuda) {
+    & wsl.exe -d $Distro -- test -x $Nvcc
+    $hasNvcc = ($LASTEXITCODE -eq 0)
+    if($hasNvcc){
+        $nvccRaw = & wsl.exe -d $Distro -- $Nvcc --version
+        $nvccText = Convert-ToSafeText $nvccRaw
+        Write-Host "CUDA compiler already present at $Nvcc"
+        Write-Host (($nvccText -split "`n")[-1])
+    }else{
+        Write-Host 'CUDA compiler not found at the expected CUDA 13.1 path.' -ForegroundColor DarkGray
         Write-Host 'Installing NVIDIA CUDA Toolkit 13.1 inside WSL...'
         Invoke-WslBash @'
 set -euo pipefail
@@ -120,12 +112,13 @@ sudo dpkg -i cuda-keyring.deb
 sudo apt-get update
 sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit-13-1
 '@
+        & wsl.exe -d $Distro -- test -x $Nvcc
+        if($LASTEXITCODE -ne 0){ throw "CUDA package installation completed but $Nvcc does not exist or is not executable." }
+        $nvccRaw = & wsl.exe -d $Distro -- $Nvcc --version
+        if($LASTEXITCODE -ne 0){ throw "CUDA compiler exists at $Nvcc but could not execute." }
+        $nvccText = Convert-ToSafeText $nvccRaw
+        Write-Host (($nvccText -split "`n")[-1])
     }
-
-    $nvccCheck = & wsl.exe -d $Distro -- bash -lc "export PATH=/usr/local/cuda-13.1/bin:/usr/local/cuda/bin:\$PATH; command -v nvcc && nvcc --version | tail -n1"
-    $nvccCheckText = (Convert-ToSafeText $nvccCheck) -replace '^\s+|\s+$',''
-    if(-not $nvccCheckText){ throw 'CUDA install completed but nvcc is still unavailable inside WSL.' }
-    Write-Host $nvccCheckText
 
     Set-Stage '5/8 Clone/update 16 GB NInfer fork'
     Invoke-WslBash @"
@@ -142,9 +135,9 @@ fi
     Set-Stage '6/8 Build NInfer for Ada sm_89'
     Invoke-WslBash @"
 set -euo pipefail
-export PATH=/usr/local/cuda-13.1/bin:/usr/local/cuda/bin:`$PATH
 cmake -S $Source -B $Build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_CUDA_COMPILER=$Nvcc \
   -DCMAKE_CUDA_ARCHITECTURES=89 \
   -DNINFER_BUILD_APPS=ON \
   -DBUILD_TESTING=OFF \
