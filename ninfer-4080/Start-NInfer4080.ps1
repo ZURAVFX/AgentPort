@@ -15,6 +15,7 @@ $profiles = @{
     Long     = @{ Context = 98304; Draft = 3 }
 }
 $p = $profiles[$Profile]
+$NInferContext = [Math]::Min($p.Context, 32768)
 $homeRaw = & wsl.exe -d $Distro -- sh -lc 'printf "%s" "$HOME"'
 if($LASTEXITCODE -ne 0){ throw "Could not resolve the Linux HOME path in '$Distro'." }
 $LinuxHome = (($homeRaw | ForEach-Object { [string]$_ }) -join "`n").Trim()
@@ -45,13 +46,13 @@ $escapedKey = $ApiKey.Replace("'", '')
 $cmd = @"
 set -euo pipefail
 mkdir -p '$Root/logs'
-nohup '$Server' '$Model' \
+setsid -f '$Server' '$Model' \
   --host 0.0.0.0 \
   --port $Port \
   --api-key '$escapedKey' \
   --model-id '$escapedModelId' \
-  --max-context $($p.Context) \
-  --kv-capacity $($p.Context) \
+  --max-context $NInferContext \
+  --kv-capacity $NInferContext \
   --max-concurrency 1 \
   --prefill-chunk 64 \
   --kv-dtype i4 \
@@ -59,14 +60,14 @@ nohup '$Server' '$Model' \
   --draft-tokens $($p.Draft) \
   --lm-head-draft \
   --preserve-thinking \
-  > '$Log' 2>&1 < /dev/null &
-echo `$!
+  > '$Log' 2>&1
+echo detached
 "@
 
 $pidText = (& wsl.exe -d $Distro -- bash -lc $cmd | Select-Object -Last 1).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Failed to launch NInfer inside WSL.' }
 Write-Host "NInfer WSL PID: $pidText"
-Write-Host "Profile: $Profile ($($p.Context) context, MTP$($p.Draft), INT4 KV)"
+Write-Host "Profile: $Profile (TextGen $($p.Context) context; NInfer $NInferContext context, MTP$($p.Draft), INT4 KV)"
 
 $headers = @{ Authorization = "Bearer $ApiKey" }
 $ready = $false

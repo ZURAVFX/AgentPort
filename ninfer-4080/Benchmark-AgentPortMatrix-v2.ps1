@@ -26,6 +26,7 @@ if($LinuxHome -notmatch '^/[A-Za-z0-9._/-]+$'){
     throw "Linux HOME must be a safe absolute path, but WSL returned: '$LinuxHome'"
 }
 $NInferRoot = "$LinuxHome/.agentport"
+$NInferContext = [Math]::Min($Context, 32768)
 
 foreach($p in @($flagsFile,$python,$conda,$server)){
     if(-not (Test-Path -LiteralPath $p)){ throw "Required AgentPort/TextGen file missing: $p" }
@@ -119,7 +120,7 @@ function Test-NInferReady {
 
 function Start-NInferBackend {
     $safeModel=$model.Replace("'",'')
-    $cmd="mkdir -p '$NInferRoot/logs'; nohup '$NInferRoot/ninfer-src/build-sm89/apps/ninfer-serve' '$NInferRoot/models/qwen3_8_27b_minq4.ninfer' --host 0.0.0.0 --port 5100 --api-key local-textgen --model-id '$safeModel' --max-context $Context --kv-capacity $Context --max-concurrency 1 --prefill-chunk 64 --kv-dtype i4 --spec mtp --draft-tokens 3 --lm-head-draft --preserve-thinking > '$NInferRoot/logs/ninfer-benchmark-v2.log' 2>&1 < /dev/null &"
+    $cmd="mkdir -p '$NInferRoot/logs'; setsid -f '$NInferRoot/ninfer-src/build-sm89/apps/ninfer-serve' '$NInferRoot/models/qwen3_8_27b_minq4.ninfer' --host 0.0.0.0 --port 5100 --api-key local-textgen --model-id '$safeModel' --max-context $NInferContext --kv-capacity $NInferContext --max-concurrency 1 --prefill-chunk 64 --kv-dtype i4 --spec mtp --draft-tokens 3 --lm-head-draft --preserve-thinking > '$NInferRoot/logs/ninfer-benchmark-v2.log' 2>&1"
     & wsl.exe -d $Distro -- bash -lc $cmd | Out-Null
     if($LASTEXITCODE -ne 0){ throw "WSL NInfer launch exited $LASTEXITCODE" }
     try{ Wait-Api 240 | Out-Null }catch{
