@@ -53,10 +53,17 @@ function Start-AgentPortNInfer4080IfEligible {
     $backend = Get-AgentPortRuntimeBackend
     if($backend -eq 'TextGen'){ return $false }
 
-    # NInfer is checkpoint-specific. Auto-switch only the stock Qwen3.8-27B Ridge quant,
-    # which is a quantization of the same official checkpoint, not a finetune.
+    # NInfer is checkpoint-specific. Only substitute the known Ridge quant of stock
+    # Qwen3.8-27B. A differently named GGUF might be a finetune or merge and must not
+    # silently be replaced by the stock NInfer artifact.
     $eligible = ([string]$Model -match '(?i)Qwen3\.8-27B-Ridge-3\.7bpw\.gguf$')
-    if(-not $eligible -and $backend -ne 'NInfer4080'){ return $false }
+    if(-not $eligible){
+        if($backend -eq 'NInfer4080'){
+            Set-Log 'NInfer4080 currently supports Qwen3.8-27B-Ridge-3.7bpw.gguf only; using TextGen for the selected model.' 'warn'
+        }
+        return $false
+    }
+
     if(-not (Test-AgentPortRtx4080)){
         if($backend -eq 'NInfer4080'){ Set-Log 'NInfer4080 requested but no RTX 4080-class GPU was detected; falling back to TextGen.' 'warn' }
         return $false
