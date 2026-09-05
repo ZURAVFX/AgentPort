@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$InstallerBuild = 'ninfer-4080-installer-v6-2026-09-05'
+$InstallerBuild = 'ninfer-4080-installer-v7-2026-09-05'
 $Repo = 'https://github.com/aljazceru/ninfer.git'
 $Root = '~/.agentport'
 $Source = "$Root/ninfer-src"
@@ -32,14 +32,27 @@ function Convert-ToSafeText {
     return ($parts -join "`n")
 }
 
+# Do NOT pipe the script through wsl.exe stdin. sudo also needs stdin for the user's
+# password, and Windows PowerShell 5 can encode native-process pipeline input in a way
+# that also causes GNU base64 to report "invalid input". Instead write an LF-only temp
+# shell script on Windows, translate its path with wslpath, and execute it directly.
 function Invoke-WslBash {
     param([Parameter(Mandatory)][string]$Command)
     $normalized = (Convert-ToSafeText $Command) -replace "`r", ''
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
-    $encoded = [Convert]::ToBase64String($bytes)
-    $encoded | & wsl.exe -d $Distro -- bash -c 'base64 -d | bash'
-    $code = $LASTEXITCODE
-    if ($code -ne 0) { throw "WSL command failed with exit code $code.`n$normalized" }
+    $temp = Join-Path $env:TEMP ('agentport-wsl-' + [guid]::NewGuid().ToString('N') + '.sh')
+    try {
+        [IO.File]::WriteAllText($temp, ($normalized + "`n"), ([Text.UTF8Encoding]::new($false)))
+        $wslPathRaw = & wsl.exe -d $Distro -- wslpath -a $temp
+        if($LASTEXITCODE -ne 0){ throw "wslpath failed for temporary script: $temp" }
+        $wslPath = (Convert-ToSafeText $wslPathRaw) -replace '^\s+|\s+$',''
+        if(-not $wslPath){ throw "wslpath returned an empty path for temporary script: $temp" }
+        & wsl.exe -d $Distro -- bash $wslPath
+        $code = $LASTEXITCODE
+        if ($code -ne 0) { throw "WSL command failed with exit code $code.`n$normalized" }
+    }
+    finally {
+        Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+    }
 }
 
 function Get-WslDistros {
@@ -57,14 +70,14 @@ function Get-WslDistros {
 try {
     Write-Host "Installer build: $InstallerBuild" -ForegroundColor Green
 
-    Set-Stage '1/8 Validate WSL distro'
+    Set-Stage '1/9 Validate WSL distro'
     $distros = Get-WslDistros
     if ($distros -notcontains $Distro) {
         throw "WSL distro '$Distro' is not installed. Install it with: wsl --install -d $Distro"
     }
     Write-Host "WSL distro found: $Distro"
 
-    Set-Stage '2/8 Validate RTX 4080 passthrough'
+    Set-Stage '2/9 Validate RTX 4080 passthrough'
     $gpuRaw = & wsl.exe -d $Distro -- nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader
     $gpuLines = @(Convert-ToSafeText $gpuRaw -split "`n")
     $gpu = if($gpuLines.Count -gt 0){ $gpuLines[0] -replace '^\s+|\s+$','' }else{ '' }
@@ -77,7 +90,14 @@ try {
     }
     if ($gpu -match ',\s*([0-9]+\.[0-9]+)\s*$' -and $Matches[1] -ne '8.9') { Write-Warning "Compute capability $($Matches[1]) detected. This build explicitly targets sm_89." }
 
-    Set-Stage '3/8 Install Linux build prerequisites'
+    Set-Stage '3/9 Authenticate Ubuntu sudo'
+    Write-Host 'Ubuntu may ask for the password for your Linux user now.' -ForegroundColor Yellow
+    Write-Host 'Linux deliberately shows no characters or asterisks while you type the password.' -ForegroundColor DarkGray
+    & wsl.exe -d $Distro -- sudo -v
+    if($LASTEXITCODE -ne 0){ throw 'sudo authentication failed. Verify the Ubuntu user password with: wsl -d Ubuntu-24.04 -- sudo -v' }
+    Write-Host 'sudo authentication confirmed.' -ForegroundColor Green
+
+    Set-Stage '4/9 Install Linux build prerequisites'
     Invoke-WslBash @'
 set -euo pipefail
 sudo apt-get update
@@ -87,7 +107,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-venv
 '@
 
-    Set-Stage '4/8 Detect or install CUDA toolkit'
+    Set-Stage '5/9 Detect or install CUDA toolkit'
     & wsl.exe -d $Distro -- test -x $Nvcc
     $hasNvcc = ($LASTEXITCODE -eq 0)
     if($hasNvcc){
@@ -120,7 +140,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit-13-1
         Write-Host (($nvccText -split "`n")[-1])
     }
 
-    Set-Stage '5/8 Clone/update 16 GB NInfer fork'
+    Set-Stage '6/9 Clone/update 16 GB NInfer fork'
     Invoke-WslBash @"
 set -euo pipefail
 mkdir -p $Root $Models
@@ -132,7 +152,7 @@ else
 fi
 "@
 
-    Set-Stage '6/8 Build NInfer for Ada sm_89'
+    Set-Stage '7/9 Build NInfer for Ada sm_89'
     Invoke-WslBash @"
 set -euo pipefail
 cmake -S $Source -B $Build -G Ninja \
@@ -145,12 +165,12 @@ cmake -S $Source -B $Build -G Ninja \
 cmake --build $Build --parallel `$(nproc) --target ninfer ninfer-serve
 "@
 
-    Set-Stage '7/8 Validate NInfer server binary'
+    Set-Stage '8/9 Validate NInfer server binary'
     Invoke-WslBash "test -x $Build/apps/ninfer-serve && $Build/apps/ninfer-serve --help >/dev/null"
     Write-Host 'ninfer-serve binary validated.'
 
     if ($Mode -eq 'BuildAndDownload') {
-        Set-Stage '8/8 Download Qwen3.8 min-Q4 NInfer artifact'
+        Set-Stage '9/9 Download Qwen3.8 min-Q4 NInfer artifact'
         Invoke-WslBash @"
 set -euo pipefail
 python3 -m venv $Root/hf-venv
@@ -160,7 +180,7 @@ $Root/hf-venv/bin/hf download $ModelRepo $ModelFile --local-dir $Models
         Invoke-WslBash "test -s $Models/$ModelFile"
         Write-Host "Model ready: $Models/$ModelFile"
     } else {
-        Set-Stage '8/8 Model download skipped (BuildOnly)'
+        Set-Stage '9/9 Model download skipped (BuildOnly)'
     }
 
     Write-Host ''
