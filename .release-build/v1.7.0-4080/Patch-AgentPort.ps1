@@ -108,7 +108,7 @@ $oldSpec = @'
 
 $newSpec = @'
     # Qwen3.8 Ridge retains the model's native MTP head. TextGen's server.py accepts
-    # --draft-max and translates it to llama-server's --spec-draft-n-max internally.
+    # --draft-max and translates it to llama-server's internal MTP draft count.
     # Keep the modes MTP-only because combined speculative modes have shown recent
     # regressions on Qwen3.8's hybrid architecture.
     $isQwen38Mtp = ([string]$Model -match '(?i)Qwen3\.8-27B.*\.gguf$')
