@@ -6,8 +6,11 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$InstallerBuild = 'ninfer-4080-installer-v7-2026-09-05'
+$InstallerBuild = 'ninfer-4080-installer-v8-2026-09-05'
 $Repo = 'https://github.com/aljazceru/ninfer.git'
+$BaseCommit = '024b3ea4b91b67fdd75d8ca947e2a58a4258237b'
+$AdaPortCommit = '39a6f20ca982f93adea52ed7941c3bd68af64111'
+$AdaRawBase = "https://raw.githubusercontent.com/UDPSendToFailed/ninfer-4090/$AdaPortCommit"
 $Root = '~/.agentport'
 $Source = "$Root/ninfer-src"
 $Build = "$Source/build-sm89"
@@ -32,10 +35,9 @@ function Convert-ToSafeText {
     return ($parts -join "`n")
 }
 
-# Do NOT pipe the script through wsl.exe stdin. sudo also needs stdin for the user's
-# password, and Windows PowerShell 5 can encode native-process pipeline input in a way
-# that also causes GNU base64 to report "invalid input". Instead write an LF-only temp
-# shell script on Windows, translate its path with wslpath, and execute it directly.
+# Never pipe the shell program through wsl.exe stdin. sudo needs the real console stdin for
+# password entry, and Windows PowerShell 5 can also re-encode native pipeline data. Write an
+# LF-only temporary script instead, translate its path with wslpath, and execute it directly.
 function Invoke-WslBash {
     param([Parameter(Mandatory)][string]$Command)
     $normalized = (Convert-ToSafeText $Command) -replace "`r", ''
@@ -70,14 +72,14 @@ function Get-WslDistros {
 try {
     Write-Host "Installer build: $InstallerBuild" -ForegroundColor Green
 
-    Set-Stage '1/9 Validate WSL distro'
+    Set-Stage '1/10 Validate WSL distro'
     $distros = Get-WslDistros
     if ($distros -notcontains $Distro) {
         throw "WSL distro '$Distro' is not installed. Install it with: wsl --install -d $Distro"
     }
     Write-Host "WSL distro found: $Distro"
 
-    Set-Stage '2/9 Validate RTX 4080 passthrough'
+    Set-Stage '2/10 Validate RTX 4080 passthrough'
     $gpuRaw = & wsl.exe -d $Distro -- nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader
     $gpuLines = @(Convert-ToSafeText $gpuRaw -split "`n")
     $gpu = if($gpuLines.Count -gt 0){ $gpuLines[0] -replace '^\s+|\s+$','' }else{ '' }
@@ -90,14 +92,14 @@ try {
     }
     if ($gpu -match ',\s*([0-9]+\.[0-9]+)\s*$' -and $Matches[1] -ne '8.9') { Write-Warning "Compute capability $($Matches[1]) detected. This build explicitly targets sm_89." }
 
-    Set-Stage '3/9 Authenticate Ubuntu sudo'
+    Set-Stage '3/10 Authenticate Ubuntu sudo'
     Write-Host 'Ubuntu may ask for the password for your Linux user now.' -ForegroundColor Yellow
     Write-Host 'Linux deliberately shows no characters or asterisks while you type the password.' -ForegroundColor DarkGray
     & wsl.exe -d $Distro -- sudo -v
     if($LASTEXITCODE -ne 0){ throw 'sudo authentication failed. Verify the Ubuntu user password with: wsl -d Ubuntu-24.04 -- sudo -v' }
     Write-Host 'sudo authentication confirmed.' -ForegroundColor Green
 
-    Set-Stage '4/9 Install Linux build prerequisites'
+    Set-Stage '4/10 Install Linux build prerequisites'
     Invoke-WslBash @'
 set -euo pipefail
 sudo apt-get update
@@ -107,7 +109,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-venv
 '@
 
-    Set-Stage '5/9 Detect or install CUDA toolkit'
+    Set-Stage '5/10 Detect or install CUDA toolkit'
     & wsl.exe -d $Distro -- test -x $Nvcc
     $hasNvcc = ($LASTEXITCODE -eq 0)
     if($hasNvcc){
@@ -140,37 +142,61 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y cuda-toolkit-13-1
         Write-Host (($nvccText -split "`n")[-1])
     }
 
-    Set-Stage '6/9 Clone/update 16 GB NInfer fork'
+    Set-Stage '6/10 Pin 16 GB NInfer fork revision'
     Invoke-WslBash @"
 set -euo pipefail
 mkdir -p $Root $Models
 if [ -d $Source/.git ]; then
-  git -C $Source fetch --all --prune
-  git -C $Source reset --hard origin/master
+  git -C $Source fetch origin master --prune
 else
-  git clone --branch master --depth 1 $Repo $Source
+  git clone $Repo $Source
 fi
+git -C $Source reset --hard
+git -C $Source clean -fdx
+git -C $Source fetch origin $BaseCommit --depth 1 || true
+git -C $Source checkout --detach $BaseCommit
 "@
+    Write-Host "Pinned 16 GB fork: $BaseCommit" -ForegroundColor DarkGray
 
-    Set-Stage '7/9 Build NInfer for Ada sm_89'
+    Set-Stage '7/10 Apply RTX 4080 Ada sm_89 W8 kernel schedules'
+    # The 16 GB fork was validated on sm_86. Its generic W8 exact/medium-T launch schedules still
+    # instantiate 16-warp / wide-column static-shared-memory kernels on sm_89; nvlink rejects those
+    # at 0xc000 (48 KiB). Pull only the two schedule/route files from the proven AD102 port. This
+    # preserves the 16 GB fork's Q4, host-pinning and artifact work while using Ada-safe W8 routes.
     Invoke-WslBash @"
 set -euo pipefail
+wget -q '$AdaRawBase/src/ops/linear/w8/w8_config.h' \
+  -O '$Source/src/ops/linear/w8/w8_config.h'
+wget -q '$AdaRawBase/src/ops/linear/w8/w8_rowsplit_gemm_splitk.cu' \
+  -O '$Source/src/ops/linear/w8/w8_rowsplit_gemm_splitk.cu'
+grep -q 'defined(NINFER_SM89)' '$Source/src/ops/linear/w8/w8_config.h'
+grep -q 'launch_w8_exact_t_composite(x, w, out, stream);' '$Source/src/ops/linear/w8/w8_rowsplit_gemm_splitk.cu'
+printf '%s\n' '$AdaPortCommit' > '$Source/.agentport-sm89-port'
+"@
+    Write-Host "Applied pinned AD102 W8 schedules from: $AdaPortCommit" -ForegroundColor Green
+
+    Set-Stage '8/10 Build NInfer for Ada sm_89'
+    Invoke-WslBash @"
+set -euo pipefail
+rm -rf $Build
 cmake -S $Source -B $Build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CUDA_COMPILER=$Nvcc \
   -DCMAKE_CUDA_ARCHITECTURES=89 \
+  -DCMAKE_CUDA_FLAGS=-DNINFER_SM89=1 \
+  -DCMAKE_CXX_FLAGS=-DNINFER_SM89=1 \
   -DNINFER_BUILD_APPS=ON \
   -DBUILD_TESTING=OFF \
   -DNINFER_BUILD_BENCHMARKS=OFF
 cmake --build $Build --parallel `$(nproc) --target ninfer ninfer-serve
 "@
 
-    Set-Stage '8/9 Validate NInfer server binary'
+    Set-Stage '9/10 Validate NInfer server binary'
     Invoke-WslBash "test -x $Build/apps/ninfer-serve && $Build/apps/ninfer-serve --help >/dev/null"
     Write-Host 'ninfer-serve binary validated.'
 
     if ($Mode -eq 'BuildAndDownload') {
-        Set-Stage '9/9 Download Qwen3.8 min-Q4 NInfer artifact'
+        Set-Stage '10/10 Download Qwen3.8 min-Q4 NInfer artifact'
         Invoke-WslBash @"
 set -euo pipefail
 python3 -m venv $Root/hf-venv
@@ -180,7 +206,7 @@ $Root/hf-venv/bin/hf download $ModelRepo $ModelFile --local-dir $Models
         Invoke-WslBash "test -s $Models/$ModelFile"
         Write-Host "Model ready: $Models/$ModelFile"
     } else {
-        Set-Stage '9/9 Model download skipped (BuildOnly)'
+        Set-Stage '10/10 Model download skipped (BuildOnly)'
     }
 
     Write-Host ''
