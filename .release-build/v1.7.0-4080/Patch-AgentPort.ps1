@@ -13,7 +13,7 @@ function Replace-Required([string]$Needle,[string]$Replacement,[string]$Label) {
 }
 
 # Surface the RTX 4080 tuned build without maintaining a second 270 KB source copy.
-$src = $src.Replace('1.6.2','1.7.1-4080')
+$src = $src.Replace('1.6.2','1.7.2-4080')
 
 # Physical RTX 4080 measurements on Qwen3.8-27B Ridge at 49k context showed plain decode at
 # ~79.6 tok/s, MTP2 at ~74.2, MTP4 at ~16.4 and MTP6 at ~6.0. Therefore this build
@@ -23,13 +23,12 @@ $src = $src.Replace('draft_mtp = $true','draft_mtp = $false')
 $src = $src.Replace("speculative_mode = 'Medium'","speculative_mode = 'Off'")
 $src = $src.Replace("if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Medium'}","if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Off'}")
 
-# Existing AgentPort installs keep launcher_config.json across EXE upgrades. That meant an old
-# Maximum-GPU/speculation selection could survive into the supposedly tuned build. Apply the
-# benchmark-v2 known-good 4080 text profile once, then preserve user changes from that point on.
+# Existing AgentPort installs keep launcher_config.json across EXE upgrades. Apply the known-good
+# 4080 profile once for this revision, then preserve user changes from that point on.
 $migration = @'
 $script:Config = Load-Config
 try {
-    $tuningRevision = '4080-ridge-text-v2'
+    $tuningRevision = '4080-ridge-visioncpu-v3'
     $currentRevision = ''
     if($script:Config.Contains('agentport_4080_tuning_revision')){
         $currentRevision = [string]$script:Config['agentport_4080_tuning_revision']
@@ -48,10 +47,10 @@ try {
 '@
 Replace-Required '$script:Config = Load-Config' $migration '4080 tuning migration'
 
-# AgentPort's bundled DeepSeek Harness is text-only. Auto-attaching a ~931 MB Qwen mmproj pushes
-# this 16 GB setup over the practical VRAM edge and can collapse decode speed into single digits.
-# Vision projector loading is intentionally disabled in this build; it can be reintroduced later
-# behind an explicit vision toggle rather than silently consuming VRAM on every text request.
+# Keep full multimodal support for DeepSeek Harness, but keep the ~931 MB Qwen projector out of
+# scarce 16 GB VRAM. TextGen exposes llama-server extra flags, so pass --no-mmproj-offload while
+# still auto-attaching the matching mmproj. Text-only generation keeps GPU headroom; image requests
+# still work and pay the projector CPU cost only when vision is actually used.
 $oldMmproj = @'
     if([IO.Path]::IsPathRooted($Model)){
         $helper = @(Find-RelatedMmproj $Model) | Select-Object -First 1
@@ -63,9 +62,22 @@ $oldMmproj = @'
     }
 '@
 $newMmproj = @'
-    # Text-only AgentPort runtime: do not auto-load a multimodal projector.
+    if([IO.Path]::IsPathRooted($Model)){
+        $helper = @(Find-RelatedMmproj $Model) | Select-Object -First 1
+        if($helper){
+            $lines += ('--mmproj "{0}"' -f $helper)
+            $lines += '--extra-flags "--no-mmproj-offload"'
+        }
+    } else {
+        $abs = Join-Path ([string]$script:Config.models_root) ($Model -replace '/','\')
+        $helper = @(Find-RelatedMmproj $abs) | Select-Object -First 1
+        if($helper){
+            $lines += ('--mmproj "{0}"' -f $helper)
+            $lines += '--extra-flags "--no-mmproj-offload"'
+        }
+    }
 '@
-Replace-Required $oldMmproj $newMmproj 'disable automatic mmproj'
+Replace-Required $oldMmproj $newMmproj 'CPU-offload multimodal projector'
 
 $helpers = @'
 # --- AgentPort RTX 4080/NInfer backend ---------------------------------------
