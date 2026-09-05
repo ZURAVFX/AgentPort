@@ -70,7 +70,7 @@ jobs:
           $dir = '.\.release-build\v1.7.0-4080\generated'
           $runtime = Join-Path $dir 'AgentPort_v1.7.0-4080.ps1'
           $exe = Join-Path $dir 'AgentPort_v1.7.0-4080.exe'
-          $bench = '.\scripts\ninfer-4080\Benchmark-AgentPortMatrix.ps1'
+          $bench = '.\scripts\ninfer-4080\Benchmark-AgentPortMatrix-v2.ps1'
           if(-not (Test-Path $exe)){ throw 'EXE missing' }
           if((Get-Item $exe).Length -lt 500000){ throw 'EXE unexpectedly small' }
           if(-not (Select-String -Path $runtime -Pattern 'Start-AgentPortNInfer4080IfEligible' -Quiet)){ throw 'NInfer injection missing' }
@@ -79,10 +79,12 @@ jobs:
           if(Select-String -Path $runtime -Pattern '--spec-type draft-mtp' -Quiet){ throw 'native MTP should not be forced by the AgentPort UI after 4080 measurements' }
           if(-not (Select-String -Path $bench -Pattern '\$FreshPrompts' -Quiet)){ throw 'fresh-task suite missing' }
           if(-not (Select-String -Path $bench -Pattern '\$RepetitivePrompts' -Quiet)){ throw 'repetitive-agent suite missing' }
-          if(-not (Select-String -Path $bench -Pattern 'NInfer' -Quiet)){ throw 'NInfer benchmark target missing' }
+          if(-not (Select-String -Path $bench -Pattern 'NInfer is not installed/ready' -Quiet)){ throw 'strict NInfer readiness guard missing' }
+          if(-not (Select-String -Path $bench -Pattern '--fit-target 768' -Quiet)){ throw 'standardized TextGen fit target missing' }
           foreach($required in @(
             '.\scripts\ninfer-4080\Run-AgentPort4080-Benchmark.cmd',
             '.\scripts\ninfer-4080\Install-NInfer4080.cmd',
+            '.\scripts\ninfer-4080\Bootstrap-NInfer4080.ps1',
             '.\scripts\ninfer-4080\Install-NInfer4080.ps1',
             '.\scripts\ninfer-4080\Start-NInfer4080.ps1',
             '.\scripts\ninfer-4080\Set-AgentPortBackend.ps1'
@@ -90,12 +92,13 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AgentPort-v1.7.0-4080-realworld-testkit
+          name: AgentPort-v1.7.0-4080-benchmark-v2
           path: |
             .release-build/v1.7.0-4080/generated/AgentPort_v1.7.0-4080.exe
-            scripts/ninfer-4080/Benchmark-AgentPortMatrix.ps1
+            scripts/ninfer-4080/Benchmark-AgentPortMatrix-v2.ps1
             scripts/ninfer-4080/Run-AgentPort4080-Benchmark.cmd
             scripts/ninfer-4080/Install-NInfer4080.cmd
+            scripts/ninfer-4080/Bootstrap-NInfer4080.ps1
             scripts/ninfer-4080/Install-NInfer4080.ps1
             scripts/ninfer-4080/Start-NInfer4080.ps1
             scripts/ninfer-4080/Set-AgentPortBackend.ps1
