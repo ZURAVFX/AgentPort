@@ -32,7 +32,7 @@ jobs:
             }
           }
 
-      - name: Generate patched v1.7.1-4080 runtime
+      - name: Generate patched v1.7.2-4080 runtime
         shell: powershell
         run: |
           $ErrorActionPreference = 'Stop'
@@ -40,10 +40,10 @@ jobs:
           New-Item -ItemType Directory -Force -Path $out | Out-Null
           & '.\.release-build\v1.7.0-4080\Patch-AgentPort.ps1' `
             -InputPath '.\.release-build\v1.6.2\AgentPort_v1.6.2.ps1' `
-            -OutputPath (Join-Path $out 'AgentPort_v1.7.1-4080.ps1')
+            -OutputPath (Join-Path $out 'AgentPort_v1.7.2-4080.ps1')
 
           $main = Get-Content '.\.release-build\v1.6.2\main.go' -Raw
-          $main = $main.Replace('1.6.2','1.7.1-4080')
+          $main = $main.Replace('1.6.2','1.7.2-4080')
           [IO.File]::WriteAllText((Join-Path $out 'main.go'),$main,([Text.UTF8Encoding]::new($false)))
 
           $resourceB64 = [regex]::Replace((Get-Content '.\.release-build\v1.6.2\rsrc_amd64.syso.b64' -Raw), '\s', '')
@@ -60,24 +60,25 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $dir = '.\.release-build\v1.7.0-4080\generated'
           Push-Location $dir
-          go mod init agentport-v171-4080
-          go build -trimpath -ldflags='-s -w -H=windowsgui' -o 'AgentPort_v1.7.1-4080.exe' .
+          go mod init agentport-v172-4080
+          go build -trimpath -ldflags='-s -w -H=windowsgui' -o 'AgentPort_v1.7.2-4080.exe' .
           Pop-Location
 
       - name: Validate generated package and benchmark kit
         shell: powershell
         run: |
           $dir = '.\.release-build\v1.7.0-4080\generated'
-          $runtime = Join-Path $dir 'AgentPort_v1.7.1-4080.ps1'
-          $exe = Join-Path $dir 'AgentPort_v1.7.1-4080.exe'
+          $runtime = Join-Path $dir 'AgentPort_v1.7.2-4080.ps1'
+          $exe = Join-Path $dir 'AgentPort_v1.7.2-4080.exe'
           $bench = '.\scripts\ninfer-4080\Benchmark-AgentPortMatrix-v2.ps1'
           if(-not (Test-Path $exe)){ throw 'EXE missing' }
           if((Get-Item $exe).Length -lt 500000){ throw 'EXE unexpectedly small' }
           if(-not (Select-String -Path $runtime -Pattern 'Start-AgentPortNInfer4080IfEligible' -Quiet)){ throw 'NInfer injection missing' }
           if(-not (Select-String -Path $runtime -Pattern "speculative_mode = 'Off'" -Quiet)){ throw 'RTX 4080 default speculation is not Off' }
           if(-not (Select-String -Path $runtime -Pattern "offload_mode = 'Auto Fit \(Recommended\)'" -Quiet)){ throw 'RTX 4080 default offload mode is not Auto Fit Recommended' }
-          if(-not (Select-String -Path $runtime -Pattern '4080-ridge-text-v2' -Quiet)){ throw 'existing-config tuning migration missing' }
-          if(-not (Select-String -Path $runtime -Pattern 'Text-only AgentPort runtime: do not auto-load a multimodal projector' -Quiet)){ throw 'text-only mmproj suppression missing' }
+          if(-not (Select-String -Path $runtime -Pattern '4080-ridge-visioncpu-v3' -Quiet)){ throw 'existing-config tuning migration missing' }
+          if(-not (Select-String -Path $runtime -Pattern '--mmproj' -Quiet)){ throw 'multimodal projector loading missing' }
+          if(-not (Select-String -Path $runtime -Pattern '--no-mmproj-offload' -Quiet)){ throw 'CPU mmproj offload protection missing' }
           if(-not (Select-String -Path $runtime -Pattern '--spec-type ngram-mod' -Quiet)){ throw 'existing ngram speculative modes missing' }
           if(Select-String -Path $runtime -Pattern '--spec-type draft-mtp' -Quiet){ throw 'native MTP should not be forced by the AgentPort UI after 4080 measurements' }
           if(-not (Select-String -Path $bench -Pattern '\$FreshPrompts' -Quiet)){ throw 'fresh-task suite missing' }
@@ -95,9 +96,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AgentPort-v1.7.1-4080-fixed
+          name: AgentPort-v1.7.2-4080-visioncpu
           path: |
-            .release-build/v1.7.0-4080/generated/AgentPort_v1.7.1-4080.exe
+            .release-build/v1.7.0-4080/generated/AgentPort_v1.7.2-4080.exe
             scripts/ninfer-4080/Benchmark-AgentPortMatrix-v2.ps1
             scripts/ninfer-4080/Run-AgentPort4080-Benchmark.cmd
             scripts/ninfer-4080/Install-NInfer4080.cmd
