@@ -29,23 +29,19 @@ $src = $src.Replace("if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedIte
 $migration = @'
 $script:Config = Load-Config
 try {
-    $tuningRevision = ''4080-ridge-text-v2''
-    $currentRevision = ''''
-    if($script:Config.PSObject.Properties.Name -contains ''agentport_4080_tuning_revision''){
-        $currentRevision = [string]$script:Config.agentport_4080_tuning_revision
+    $tuningRevision = '4080-ridge-text-v2'
+    $currentRevision = ''
+    if($script:Config.Contains('agentport_4080_tuning_revision')){
+        $currentRevision = [string]$script:Config['agentport_4080_tuning_revision']
     }
     if($currentRevision -ne $tuningRevision){
-        $script:Config.last_context = ''48k (49,152 tokens)''
-        $script:Config.cache_type = ''q4_0''
-        $script:Config.offload_mode = ''Auto Fit (Recommended)''
-        $script:Config.draft_mtp = $false
-        $script:Config.speculative_mode = ''Off''
-        $script:Config.runtime_backend = ''TextGen''
-        if($script:Config.PSObject.Properties.Name -contains ''agentport_4080_tuning_revision''){
-            $script:Config.agentport_4080_tuning_revision = $tuningRevision
-        }else{
-            $script:Config | Add-Member -NotePropertyName agentport_4080_tuning_revision -NotePropertyValue $tuningRevision
-        }
+        $script:Config['last_context'] = '48k (49,152 tokens)'
+        $script:Config['cache_type'] = 'q4_0'
+        $script:Config['offload_mode'] = 'Auto Fit (Recommended)'
+        $script:Config['draft_mtp'] = $false
+        $script:Config['speculative_mode'] = 'Off'
+        $script:Config['runtime_backend'] = 'TextGen'
+        $script:Config['agentport_4080_tuning_revision'] = $tuningRevision
         Save-Config
     }
 }catch{}
