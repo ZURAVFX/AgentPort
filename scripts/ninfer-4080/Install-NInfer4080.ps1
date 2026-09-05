@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$InstallerBuild = 'ninfer-4080-installer-v4-2026-09-05'
+$InstallerBuild = 'ninfer-4080-installer-v5-2026-09-05'
 $Repo = 'https://github.com/aljazceru/ninfer.git'
 $Root = '~/.agentport'
 $Source = "$Root/ninfer-src"
@@ -32,8 +32,15 @@ function Convert-ToSafeText {
 
 function Invoke-WslBash {
     param([Parameter(Mandatory)][string]$Command)
+
+    # Do NOT pass multiline Bash through the Windows native command line. Windows
+    # PowerShell 5 can rewrite quotes, parentheses, semicolons and $ expansions in
+    # arguments to wsl.exe. Encode the script in PowerShell, stream only the Base64
+    # payload over stdin, decode inside Ubuntu, then execute it with Bash.
     $normalized = (Convert-ToSafeText $Command) -replace "`r", ''
-    & wsl.exe -d $Distro -- bash -lc $normalized
+    $bytes = [System.Text.Encoding]::UTF8.GetBytes($normalized)
+    $encoded = [Convert]::ToBase64String($bytes)
+    $encoded | & wsl.exe -d $Distro -- bash -c 'base64 -d | bash'
     $code = $LASTEXITCODE
     if ($code -ne 0) { throw "WSL command failed with exit code $code.`n$normalized" }
 }
