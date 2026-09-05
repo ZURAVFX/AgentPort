@@ -12,13 +12,13 @@ function Replace-Required([string]$Needle,[string]$Replacement,[string]$Label) {
     $script:src = $script:src.Replace($Needle,$Replacement)
 }
 
-# Surface the experimental backend in the app version without maintaining a second 270 KB source copy.
+# Surface the RTX 4080 tuned build without maintaining a second 270 KB source copy.
 $src = $src.Replace('1.6.2','1.7.0-4080')
 
 # Real RTX 4080 measurements on Qwen3.8-27B Ridge at 49k context showed plain decode at
-# ~79.6 tok/s, MTP2 at ~74.2, MTP4 at ~16.4 and MTP6 at ~6.0. Therefore the 4080 build
-# defaults to speculative decoding OFF. The existing Conservative/Medium/Aggressive choices
-# remain the lightweight ngram-mod implementation rather than being remapped to native MTP.
+# ~79.6 tok/s, MTP2 at ~74.2, MTP4 at ~16.4 and MTP6 at ~6.0. Therefore this build
+# defaults to speculative decoding OFF. Conservative/Medium/Aggressive remain available
+# as the existing lightweight ngram-mod choices for explicit testing/use.
 $src = $src.Replace('draft_mtp = $true','draft_mtp = $false')
 $src = $src.Replace("speculative_mode = 'Medium'","speculative_mode = 'Off'")
 $src = $src.Replace("if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Medium'}","if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Off'}")
@@ -30,7 +30,9 @@ function Get-AgentPortRuntimeBackend {
         $v=[string]$script:Config.runtime_backend
         if($v){ return $v }
     }
-    return 'Auto'
+    # Proven/default path: TextGen. NInfer remains explicit/experimental until its
+    # Ada sm_89 16 GB build is validated on a physical RTX 4080.
+    return 'TextGen'
 }
 
 function Get-AgentPortNInferDistro {
@@ -59,26 +61,23 @@ function Test-AgentPortNInferWslReady {
 function Start-AgentPortNInfer4080IfEligible {
     param([string]$Model,[int]$Context)
     $backend = Get-AgentPortRuntimeBackend
-    if($backend -eq 'TextGen'){ return $false }
+    if($backend -ne 'NInfer4080'){ return $false }
 
-    # The 16 GB NInfer artifact is a quant of stock Qwen3.8-27B. Only substitute the known
-    # Ridge GGUF selection so an unrelated finetune/merge is never silently replaced.
+    # NInfer is intentionally opt-in while the 16 GB Ada port is experimental.
     $eligible = ([string]$Model -match '(?i)Qwen3\.8-27B-Ridge-3\.7bpw\.gguf$')
     if(-not $eligible){
-        if($backend -eq 'NInfer4080'){
-            Set-Log 'NInfer4080 currently supports Qwen3.8-27B-Ridge-3.7bpw.gguf only; using TextGen for the selected model.' 'warn'
-        }
+        Set-Log 'NInfer4080 currently supports Qwen3.8-27B-Ridge-3.7bpw.gguf only; using TextGen for the selected model.' 'warn'
         return $false
     }
 
     if(-not (Test-AgentPortRtx4080)){
-        if($backend -eq 'NInfer4080'){ Set-Log 'NInfer4080 requested but no RTX 4080-class GPU was detected; falling back to TextGen.' 'warn' }
+        Set-Log 'NInfer4080 requested but no RTX 4080-class GPU was detected; falling back to TextGen.' 'warn'
         return $false
     }
 
     $distro = Get-AgentPortNInferDistro
     if(-not (Test-AgentPortNInferWslReady $distro)){
-        if($backend -eq 'NInfer4080'){ Set-Log ('NInfer4080 requested but the WSL engine/model is not installed in '+$distro+'; falling back to TextGen.') 'warn' }
+        Set-Log ('NInfer4080 requested but the WSL engine/model is not installed in '+$distro+'; falling back to TextGen.') 'warn'
         return $false
     }
 
@@ -88,7 +87,7 @@ function Start-AgentPortNInfer4080IfEligible {
     try{
         & wsl.exe -d $distro -- bash -lc $cmd | Out-Null
         if($LASTEXITCODE -ne 0){ throw "wsl exit $LASTEXITCODE" }
-        Set-Log ('Starting NInfer RTX 4080 backend: '+$ctx+' ctx, INT4 KV, native MTP3.') 'ok'
+        Set-Log ('Starting experimental NInfer RTX 4080 backend: '+$ctx+' ctx, INT4 KV, native MTP3.') 'ok'
         $script:TextGenProcess = $null
         return $true
     }catch{
@@ -106,7 +105,6 @@ $outDir = Split-Path -Parent $OutputPath
 if($outDir -and -not (Test-Path $outDir)){ New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
 [IO.File]::WriteAllText($OutputPath,$src,([Text.UTF8Encoding]::new($false)))
 
-# PowerShell parse validation catches malformed generated source in CI before packaging.
 $tokens=$null; $errors=$null
 [System.Management.Automation.Language.Parser]::ParseFile($OutputPath,[ref]$tokens,[ref]$errors) | Out-Null
 if($errors.Count -gt 0){
