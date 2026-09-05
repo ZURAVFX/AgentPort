@@ -64,26 +64,40 @@ jobs:
           go build -trimpath -ldflags='-s -w -H=windowsgui' -o 'AgentPort_v1.7.0-4080.exe' .
           Pop-Location
 
-      - name: Validate generated package
+      - name: Validate generated package and benchmark kit
         shell: powershell
         run: |
           $dir = '.\.release-build\v1.7.0-4080\generated'
           $runtime = Join-Path $dir 'AgentPort_v1.7.0-4080.ps1'
           $exe = Join-Path $dir 'AgentPort_v1.7.0-4080.exe'
+          $bench = '.\scripts\ninfer-4080\Benchmark-AgentPortMatrix.ps1'
           if(-not (Test-Path $exe)){ throw 'EXE missing' }
           if((Get-Item $exe).Length -lt 500000){ throw 'EXE unexpectedly small' }
           if(-not (Select-String -Path $runtime -Pattern 'Start-AgentPortNInfer4080IfEligible' -Quiet)){ throw 'NInfer injection missing' }
-          if(-not (Select-String -Path $runtime -Pattern '--spec-type draft-mtp' -Quiet)){ throw 'native MTP spec type missing' }
-          if(-not (Select-String -Path $runtime -Pattern '--draft-max 4' -Quiet)){ throw 'TextGen draft-max launcher flag missing' }
-          if(Select-String -Path $runtime -Pattern '--spec-draft-n-max' -Quiet){ throw 'raw llama-server MTP flag leaked into TextGen CMD flags' }
-          if(-not (Test-Path '.\scripts\ninfer-4080\Benchmark-AgentPortMatrix.ps1')){ throw 'benchmark matrix script missing' }
-          if(-not (Test-Path '.\scripts\ninfer-4080\Run-AgentPort4080-Benchmark.cmd')){ throw 'one-click benchmark launcher missing' }
+          if(-not (Select-String -Path $runtime -Pattern "speculative_mode = 'Off'" -Quiet)){ throw 'RTX 4080 default speculation is not Off' }
+          if(-not (Select-String -Path $runtime -Pattern '--spec-type ngram-mod' -Quiet)){ throw 'existing ngram speculative modes missing' }
+          if(Select-String -Path $runtime -Pattern '--spec-type draft-mtp' -Quiet){ throw 'native MTP should not be forced by the AgentPort UI after 4080 measurements' }
+          if(-not (Select-String -Path $bench -Pattern '\$FreshPrompts' -Quiet)){ throw 'fresh-task suite missing' }
+          if(-not (Select-String -Path $bench -Pattern '\$RepetitivePrompts' -Quiet)){ throw 'repetitive-agent suite missing' }
+          if(-not (Select-String -Path $bench -Pattern 'NInfer' -Quiet)){ throw 'NInfer benchmark target missing' }
+          foreach($required in @(
+            '.\scripts\ninfer-4080\Run-AgentPort4080-Benchmark.cmd',
+            '.\scripts\ninfer-4080\Install-NInfer4080.cmd',
+            '.\scripts\ninfer-4080\Install-NInfer4080.ps1',
+            '.\scripts\ninfer-4080\Start-NInfer4080.ps1',
+            '.\scripts\ninfer-4080\Set-AgentPortBackend.ps1'
+          )){ if(-not (Test-Path $required)){ throw "required test-kit file missing: $required" } }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AgentPort-v1.7.0-4080-testkit
+          name: AgentPort-v1.7.0-4080-realworld-testkit
           path: |
             .release-build/v1.7.0-4080/generated/AgentPort_v1.7.0-4080.exe
             scripts/ninfer-4080/Benchmark-AgentPortMatrix.ps1
             scripts/ninfer-4080/Run-AgentPort4080-Benchmark.cmd
+            scripts/ninfer-4080/Install-NInfer4080.cmd
+            scripts/ninfer-4080/Install-NInfer4080.ps1
+            scripts/ninfer-4080/Start-NInfer4080.ps1
+            scripts/ninfer-4080/Set-AgentPortBackend.ps1
+            scripts/ninfer-4080/README.md
           if-no-files-found: error
