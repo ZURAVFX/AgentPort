@@ -71,7 +71,7 @@ function Start-AgentPortNInfer4080IfEligible {
     # The published 16 GB fork is measured at 49k with MTP3 and supports longer contexts.
     # Clamp the GUI request to a conservative 98k ceiling on a 16 GB 4080.
     $ctx = [Math]::Max(8192,[Math]::Min([int]$Context,98304))
-    $modelId = ([string]$Model).Replace("'","'\"'\"'")
+    $modelId = ([string]$Model).Replace("'",'')
     $cmd = "pkill -f 'ninfer-serve.*--port 5100' >/dev/null 2>&1 || true; mkdir -p ~/.agentport/logs; nohup ~/.agentport/ninfer-src/build-sm89/apps/ninfer-serve ~/.agentport/models/qwen3_8_27b_minq4.ninfer --host 0.0.0.0 --port 5100 --api-key local-textgen --model-id '$modelId' --max-context $ctx --kv-capacity $ctx --max-concurrency 1 --prefill-chunk 64 --kv-dtype i4 --spec mtp --draft-tokens 3 --lm-head-draft --preserve-thinking > ~/.agentport/logs/ninfer-serve.log 2>&1 < /dev/null &"
     try{
         & wsl.exe -d $distro -- bash -lc $cmd | Out-Null
