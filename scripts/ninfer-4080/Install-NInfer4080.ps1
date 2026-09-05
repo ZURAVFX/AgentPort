@@ -95,14 +95,14 @@ fi
 Write-Host 'Configuring NInfer specifically for Ada sm_89...'
 Invoke-WslBash @"
 set -euo pipefail
-export PATH=/usr/local/cuda-13.1/bin:/usr/local/cuda/bin:\$PATH
+export PATH=/usr/local/cuda-13.1/bin:/usr/local/cuda/bin:`$PATH
 cmake -S $Source -B $Build -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CUDA_ARCHITECTURES=89 \
   -DNINFER_BUILD_APPS=ON \
   -DBUILD_TESTING=OFF \
   -DNINFER_BUILD_BENCHMARKS=OFF
-cmake --build $Build --parallel \$(nproc) --target ninfer ninfer-serve
+cmake --build $Build --parallel `$(nproc) --target ninfer ninfer-serve
 "@
 
 Write-Host 'Validating the sm_89 server binary...'
