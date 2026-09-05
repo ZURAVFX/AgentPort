@@ -13,7 +13,15 @@ function Replace-Required([string]$Needle,[string]$Replacement,[string]$Label) {
 }
 
 # Surface the experimental backend in the app version without maintaining a second 270 KB source copy.
-$src = $src.Replace("1.6.2","1.7.0-4080")
+$src = $src.Replace('1.6.2','1.7.0-4080')
+
+# Real RTX 4080 measurements on Qwen3.8-27B Ridge at 49k context showed plain decode at
+# ~79.6 tok/s, MTP2 at ~74.2, MTP4 at ~16.4 and MTP6 at ~6.0. Therefore the 4080 build
+# defaults to speculative decoding OFF. The existing Conservative/Medium/Aggressive choices
+# remain the lightweight ngram-mod implementation rather than being remapped to native MTP.
+$src = $src.Replace('draft_mtp = $true','draft_mtp = $false')
+$src = $src.Replace("speculative_mode = 'Medium'","speculative_mode = 'Off'")
+$src = $src.Replace("if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Medium'}","if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Off'}")
 
 $helpers = @'
 # --- AgentPort RTX 4080/NInfer backend ---------------------------------------
@@ -53,9 +61,8 @@ function Start-AgentPortNInfer4080IfEligible {
     $backend = Get-AgentPortRuntimeBackend
     if($backend -eq 'TextGen'){ return $false }
 
-    # NInfer is checkpoint-specific. Only substitute the known Ridge quant of stock
-    # Qwen3.8-27B. A differently named GGUF might be a finetune or merge and must not
-    # silently be replaced by the stock NInfer artifact.
+    # The 16 GB NInfer artifact is a quant of stock Qwen3.8-27B. Only substitute the known
+    # Ridge GGUF selection so an unrelated finetune/merge is never silently replaced.
     $eligible = ([string]$Model -match '(?i)Qwen3\.8-27B-Ridge-3\.7bpw\.gguf$')
     if(-not $eligible){
         if($backend -eq 'NInfer4080'){
@@ -75,8 +82,6 @@ function Start-AgentPortNInfer4080IfEligible {
         return $false
     }
 
-    # The published 16 GB fork is measured at 49k with MTP3 and supports longer contexts.
-    # Clamp the GUI request to a conservative 98k ceiling on a 16 GB 4080.
     $ctx = [Math]::Max(8192,[Math]::Min([int]$Context,98304))
     $modelId = ([string]$Model).Replace("'",'')
     $cmd = "pkill -f 'ninfer-serve.*--port 5100' >/dev/null 2>&1 || true; mkdir -p ~/.agentport/logs; nohup ~/.agentport/ninfer-src/build-sm89/apps/ninfer-serve ~/.agentport/models/qwen3_8_27b_minq4.ninfer --host 0.0.0.0 --port 5100 --api-key local-textgen --model-id '$modelId' --max-context $ctx --kv-capacity $ctx --max-concurrency 1 --prefill-chunk 64 --kv-dtype i4 --spec mtp --draft-tokens 3 --lm-head-draft --preserve-thinking > ~/.agentport/logs/ninfer-serve.log 2>&1 < /dev/null &"
@@ -96,37 +101,6 @@ function Start-AgentPortNInfer4080IfEligible {
 '@
 
 Replace-Required "function Start-TextGen {" ($helpers + "function Start-TextGen {`r`n    if(Start-AgentPortNInfer4080IfEligible -Model ([string]`$script:PendingModel) -Context ([int]`$script:PendingContext)){ return }") 'Start-TextGen injection'
-
-$oldSpec = @'
-    # Model-agnostic speculative decoding. ngram-mod works without requiring an MTP-specific GGUF.
-    switch($SpecMode){
-        'Conservative' { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 16'; $lines += '--spec-ngram-size-m 32' }
-        'Medium'       { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 24'; $lines += '--spec-ngram-size-m 48' }
-        'Aggressive'   { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 32'; $lines += '--spec-ngram-size-m 64' }
-    }
-'@
-
-$newSpec = @'
-    # Qwen3.8 Ridge retains the model's native MTP head. TextGen's server.py accepts
-    # --draft-max and translates it to llama-server's internal MTP draft count.
-    # Keep the modes MTP-only because combined speculative modes have shown recent
-    # regressions on Qwen3.8's hybrid architecture.
-    $isQwen38Mtp = ([string]$Model -match '(?i)Qwen3\.8-27B.*\.gguf$')
-    if($isQwen38Mtp -and $SpecMode -ne 'Off'){
-        switch($SpecMode){
-            'Conservative' { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 2' }
-            'Medium'       { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 4' }
-            'Aggressive'   { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 6' }
-        }
-    } else {
-        switch($SpecMode){
-            'Conservative' { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 16'; $lines += '--spec-ngram-size-m 32' }
-            'Medium'       { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 24'; $lines += '--spec-ngram-size-m 48' }
-            'Aggressive'   { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 32'; $lines += '--spec-ngram-size-m 64' }
-        }
-    }
-'@
-Replace-Required $oldSpec $newSpec 'native MTP flags'
 
 $outDir = Split-Path -Parent $OutputPath
 if($outDir -and -not (Test-Path $outDir)){ New-Item -ItemType Directory -Force -Path $outDir | Out-Null }
