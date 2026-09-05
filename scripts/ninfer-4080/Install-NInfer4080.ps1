@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$InstallerBuild = 'ninfer-4080-installer-v8-2026-09-05'
+$InstallerBuild = 'ninfer-4080-installer-v9-2026-09-05'
 $Repo = 'https://github.com/aljazceru/ninfer.git'
 $BaseCommit = '024b3ea4b91b67fdd75d8ca947e2a58a4258237b'
 $AdaPortCommit = '39a6f20ca982f93adea52ed7941c3bd68af64111'
@@ -35,19 +35,33 @@ function Convert-ToSafeText {
     return ($parts -join "`n")
 }
 
+function Convert-WindowsPathToWsl {
+    param([Parameter(Mandatory)][string]$Path)
+    $full = [IO.Path]::GetFullPath($Path)
+    if($full -notmatch '^([A-Za-z]):\\(.*)$'){
+        throw "Cannot convert Windows path to WSL mount path: $full"
+    }
+    $drive = $Matches[1].ToLowerInvariant()
+    $rest = $Matches[2] -replace '\\','/'
+    return "/mnt/$drive/$rest"
+}
+
 # Never pipe the shell program through wsl.exe stdin. sudo needs the real console stdin for
 # password entry, and Windows PowerShell 5 can also re-encode native pipeline data. Write an
-# LF-only temporary script instead, translate its path with wslpath, and execute it directly.
+# LF-only temporary script on Windows and execute it through WSL's standard /mnt/<drive> mount.
+# Do not call wslpath with a raw C:\ path: on some WSL/PowerShell combinations the backslashes
+# are consumed as escapes before wslpath sees them (e.g. C:Usersname...), which caused v8 to fail.
 function Invoke-WslBash {
     param([Parameter(Mandatory)][string]$Command)
     $normalized = (Convert-ToSafeText $Command) -replace "`r", ''
     $temp = Join-Path $env:TEMP ('agentport-wsl-' + [guid]::NewGuid().ToString('N') + '.sh')
     try {
         [IO.File]::WriteAllText($temp, ($normalized + "`n"), ([Text.UTF8Encoding]::new($false)))
-        $wslPathRaw = & wsl.exe -d $Distro -- wslpath -a $temp
-        if($LASTEXITCODE -ne 0){ throw "wslpath failed for temporary script: $temp" }
-        $wslPath = (Convert-ToSafeText $wslPathRaw) -replace '^\s+|\s+$',''
-        if(-not $wslPath){ throw "wslpath returned an empty path for temporary script: $temp" }
+        $wslPath = Convert-WindowsPathToWsl $temp
+        & wsl.exe -d $Distro -- test -f $wslPath
+        if($LASTEXITCODE -ne 0){
+            throw "Temporary script is not visible through WSL at $wslPath (Windows path: $temp)"
+        }
         & wsl.exe -d $Distro -- bash $wslPath
         $code = $LASTEXITCODE
         if ($code -ne 0) { throw "WSL command failed with exit code $code.`n$normalized" }
