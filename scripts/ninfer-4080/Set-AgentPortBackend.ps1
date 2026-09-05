@@ -32,9 +32,9 @@ $cfg | ConvertTo-Json -Depth 12 | Set-Content -Path $configFile -Encoding UTF8
 Write-Host "AgentPort runtime backend set to: $Backend" -ForegroundColor Green
 Write-Host "Config: $configFile"
 if($Backend -eq 'Auto'){
-    Write-Host 'Auto uses NInfer for Qwen3.8-27B-Ridge-3.7bpw when the RTX 4080 WSL backend is installed; otherwise it falls back to TextGen.'
+    Write-Host 'Auto currently stays on the proven TextGen path. NInfer remains installed and benchmarkable, but is not auto-selected until it proves faster on the physical RTX 4080.'
 }elseif($Backend -eq 'NInfer4080'){
-    Write-Host 'NInfer4080 requests the optimized backend. If its prerequisites are missing, AgentPort logs a warning and falls back to TextGen.'
+    Write-Host 'NInfer4080 explicitly requests the experimental optimized backend. If prerequisites are missing, AgentPort logs a warning and falls back to TextGen.'
 }else{
-    Write-Host 'TextGen forces the existing GGUF backend.'
+    Write-Host 'TextGen forces the proven GGUF backend.'
 }
