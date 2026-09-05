@@ -16,8 +16,12 @@ $ModelFile = 'qwen3_8_27b_minq4.ninfer'
 
 function Invoke-WslBash {
     param([Parameter(Mandatory)][string]$Command)
-    & wsl.exe -d $Distro -- bash -lc $Command
-    if ($LASTEXITCODE -ne 0) { throw "WSL command failed with exit code $LASTEXITCODE.`n$Command" }
+    # PowerShell here-strings use Windows CRLF. bash -lc receives those CR bytes
+    # literally through wsl.exe, which breaks `set -euo pipefail` and backslash
+    # continuations. Normalise every multiline command to Unix LF before execution.
+    $normalized = $Command.Replace("`r`n", "`n").Replace("`r", '')
+    & wsl.exe -d $Distro -- bash -lc $normalized
+    if ($LASTEXITCODE -ne 0) { throw "WSL command failed with exit code $LASTEXITCODE.`n$normalized" }
 }
 
 function Get-WslDistros {
