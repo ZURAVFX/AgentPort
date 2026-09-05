@@ -13,15 +13,63 @@ function Replace-Required([string]$Needle,[string]$Replacement,[string]$Label) {
 }
 
 # Surface the RTX 4080 tuned build without maintaining a second 270 KB source copy.
-$src = $src.Replace('1.6.2','1.7.0-4080')
+$src = $src.Replace('1.6.2','1.7.1-4080')
 
-# Real RTX 4080 measurements on Qwen3.8-27B Ridge at 49k context showed plain decode at
+# Physical RTX 4080 measurements on Qwen3.8-27B Ridge at 49k context showed plain decode at
 # ~79.6 tok/s, MTP2 at ~74.2, MTP4 at ~16.4 and MTP6 at ~6.0. Therefore this build
 # defaults to speculative decoding OFF. Conservative/Medium/Aggressive remain available
 # as the existing lightweight ngram-mod choices for explicit testing/use.
 $src = $src.Replace('draft_mtp = $true','draft_mtp = $false')
 $src = $src.Replace("speculative_mode = 'Medium'","speculative_mode = 'Off'")
 $src = $src.Replace("if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Medium'}","if(`$SpecCombo.SelectedIndex -lt 0){`$SpecCombo.SelectedItem='Off'}")
+
+# Existing AgentPort installs keep launcher_config.json across EXE upgrades. That meant an old
+# Maximum-GPU/speculation selection could survive into the supposedly tuned build. Apply the
+# benchmark-v2 known-good 4080 text profile once, then preserve user changes from that point on.
+$migration = @'
+$script:Config = Load-Config
+try {
+    $tuningRevision = ''4080-ridge-text-v2''
+    $currentRevision = ''''
+    if($script:Config.PSObject.Properties.Name -contains ''agentport_4080_tuning_revision''){
+        $currentRevision = [string]$script:Config.agentport_4080_tuning_revision
+    }
+    if($currentRevision -ne $tuningRevision){
+        $script:Config.last_context = ''48k (49,152 tokens)''
+        $script:Config.cache_type = ''q4_0''
+        $script:Config.offload_mode = ''Auto Fit (Recommended)''
+        $script:Config.draft_mtp = $false
+        $script:Config.speculative_mode = ''Off''
+        $script:Config.runtime_backend = ''TextGen''
+        if($script:Config.PSObject.Properties.Name -contains ''agentport_4080_tuning_revision''){
+            $script:Config.agentport_4080_tuning_revision = $tuningRevision
+        }else{
+            $script:Config | Add-Member -NotePropertyName agentport_4080_tuning_revision -NotePropertyValue $tuningRevision
+        }
+        Save-Config
+    }
+}catch{}
+'@
+Replace-Required '$script:Config = Load-Config' $migration '4080 tuning migration'
+
+# AgentPort's bundled DeepSeek Harness is text-only. Auto-attaching a ~931 MB Qwen mmproj pushes
+# this 16 GB setup over the practical VRAM edge and can collapse decode speed into single digits.
+# Vision projector loading is intentionally disabled in this build; it can be reintroduced later
+# behind an explicit vision toggle rather than silently consuming VRAM on every text request.
+$oldMmproj = @'
+    if([IO.Path]::IsPathRooted($Model)){
+        $helper = @(Find-RelatedMmproj $Model) | Select-Object -First 1
+        if($helper){ $lines += ('--mmproj "{0}"' -f $helper) }
+    } else {
+        $abs = Join-Path ([string]$script:Config.models_root) ($Model -replace '/','\')
+        $helper = @(Find-RelatedMmproj $abs) | Select-Object -First 1
+        if($helper){ $lines += ('--mmproj "{0}"' -f $helper) }
+    }
+'@
+$newMmproj = @'
+    # Text-only AgentPort runtime: do not auto-load a multimodal projector.
+'@
+Replace-Required $oldMmproj $newMmproj 'disable automatic mmproj'
 
 $helpers = @'
 # --- AgentPort RTX 4080/NInfer backend ---------------------------------------
@@ -30,8 +78,6 @@ function Get-AgentPortRuntimeBackend {
         $v=[string]$script:Config.runtime_backend
         if($v){ return $v }
     }
-    # Proven/default path: TextGen. NInfer remains explicit/experimental until its
-    # Ada sm_89 16 GB build is validated on a physical RTX 4080.
     return 'TextGen'
 }
 
@@ -63,7 +109,7 @@ function Start-AgentPortNInfer4080IfEligible {
     $backend = Get-AgentPortRuntimeBackend
     if($backend -ne 'NInfer4080'){ return $false }
 
-    # NInfer is intentionally opt-in while the 16 GB Ada port is experimental.
+    # NInfer is explicit/experimental until the physical 4080 benchmark proves it wins.
     $eligible = ([string]$Model -match '(?i)Qwen3\.8-27B-Ridge-3\.7bpw\.gguf$')
     if(-not $eligible){
         Set-Log 'NInfer4080 currently supports Qwen3.8-27B-Ridge-3.7bpw.gguf only; using TextGen for the selected model.' 'warn'
