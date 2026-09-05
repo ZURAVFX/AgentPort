@@ -1,11 +1,10 @@
 [CmdletBinding()]
 param(
-    [int]$Runs = 3,
-    [int]$MaxTokens = 512,
+    [int]$MaxTokens = 384,
     [int]$Context = 49152,
-    [string]$Prompt = 'Write a compact but complete Python implementation of an LRU cache with type hints, then explain its time complexity.',
     [string]$Distro = 'Ubuntu-24.04',
-    [switch]$SkipNInfer
+    [switch]$SkipNInfer,
+    [switch]$IncludeNativeMtp
 )
 
 $ErrorActionPreference = 'Stop'
@@ -38,12 +37,34 @@ function Get-SelectedModel([string]$Flags){
 }
 
 $model = Get-SelectedModel $originalFlags
+$projectorWasPresent = ($originalFlags -match '(?im)^--(?:mmproj|multimodal-projector)\b')
+
+$FreshPrompts = @(
+    'Implement a production-quality Python async TTL plus LRU cache. Include type hints, O(1) get/set behavior, expiry handling, an asyncio lock strategy, complete code, and a concise complexity discussion.',
+    'Debug this TypeScript requirement from first principles: a debounced async search function must cancel stale requests, preserve the newest result, expose a flush method, and never resolve an older request after a newer one. Provide a complete implementation and explain the race-condition fix.',
+    'Write a robust Windows PowerShell script that recursively finds duplicate files by SHA-256, skips inaccessible paths without aborting, prints reclaimable bytes, and supports a dry-run delete plan. Include clear error handling and comments.',
+    'Design a local AI-agent process supervisor for Windows. It must launch an inference API and an agent harness, detect dead processes, avoid port collisions, preserve logs, recover after crashes, and shut down cleanly. Give the architecture, state machine, and implementation pseudocode.',
+    'Return a valid JSON plan for a coding agent that must inspect a repository, identify a failing unit test, patch the smallest responsible code path, run targeted tests, then run the full suite. Use an array of steps with keys action, target, reason, and success_criteria, followed by a short risk analysis.'
+)
+
+# These deliberately share structure without repeating an identical prompt. That lets ngram-mod
+# show its real advantage on tool schemas and repetitive agent output without memorising one answer.
+$RepetitivePrompts = @(
+    'Output exactly 20 JSON objects for a file-edit plan. Every object must use keys action, path, operation, reason, verify. Use action edit and create only. Paths should describe a Python API project with auth, users, tests, and docs. No prose outside the JSON array.',
+    'Output exactly 20 JSON objects for a file-edit plan. Every object must use keys action, path, operation, reason, verify. Use action edit and create only. Paths should describe a TypeScript desktop app with settings, IPC, tests, and packaging. No prose outside the JSON array.',
+    'Output exactly 20 JSON objects for a file-edit plan. Every object must use keys action, path, operation, reason, verify. Use action edit and create only. Paths should describe a PowerShell Windows launcher with logging, config, recovery, and tests. No prose outside the JSON array.',
+    'Output exactly 20 JSON objects for a file-edit plan. Every object must use keys action, path, operation, reason, verify. Use action edit and create only. Paths should describe a local LLM inference service with model loading, health checks, benchmarking, and docs. No prose outside the JSON array.',
+    'Output exactly 20 JSON objects for a file-edit plan. Every object must use keys action, path, operation, reason, verify. Use action edit and create only. Paths should describe a CI pipeline with build, lint, unit tests, integration tests, artifacts, and release notes. No prose outside the JSON array.'
+)
+
 Write-Host ''
-Write-Host 'AgentPort RTX 4080 benchmark matrix' -ForegroundColor Cyan
-Write-Host ('Model:   {0}' -f $model)
-Write-Host ('Context: {0:N0}' -f $Context)
-Write-Host ('Runs:    {0} measured + 1 warmup per mode' -f $Runs)
-Write-Host ('Output:  up to {0:N0} tokens per request' -f $MaxTokens)
+Write-Host 'AgentPort RTX 4080 REAL-WORLD benchmark' -ForegroundColor Cyan
+Write-Host ('Model:       {0}' -f $model)
+Write-Host ('Context:     {0:N0}' -f $Context)
+Write-Host ('Output cap:  {0:N0} tokens per task' -f $MaxTokens)
+Write-Host ('Fresh tasks: {0}' -f $FreshPrompts.Count)
+Write-Host ('Agent tasks: {0}' -f $RepetitivePrompts.Count)
+if($projectorWasPresent){ Write-Host 'Vision projector: temporarily disabled for text-only TextGen measurements.' -ForegroundColor DarkGray }
 Write-Host ''
 
 function Stop-LocalBackend {
@@ -57,7 +78,7 @@ function Stop-LocalBackend {
     Start-Sleep -Milliseconds 700
 }
 
-function Wait-Api([int]$TimeoutSec=180){
+function Wait-Api([int]$TimeoutSec=240){
     $deadline = (Get-Date).AddSeconds($TimeoutSec)
     while((Get-Date) -lt $deadline){
         try{
@@ -78,9 +99,9 @@ function Start-TextGenBackend {
     $envDir = Join-Path $textgenRoot 'installer_files\env'
     $cmd = 'set "PYTHONNOUSERSITE=1"&& set "PYTHONPATH="&& set "PYTHONHOME="&& set "PYTHONUTF8=1"&& set "CUDA_PATH={0}"&& set "CUDA_HOME={0}"&& call "{1}" activate "{0}" && "{2}" server.py > "{3}" 2> "{4}"' -f $envDir,$conda,$python,$out,$err
     Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $textgenRoot -WindowStyle Hidden | Out-Null
-    try { Wait-Api 180 | Out-Null }
+    try { Wait-Api 240 | Out-Null }
     catch {
-        $tail = if(Test-Path $err){ (Get-Content $err -Tail 80) -join "`n" }else{ 'No TextGen error log found.' }
+        $tail = if(Test-Path $err){ (Get-Content $err -Tail 100) -join "`n" }else{ 'No TextGen error log found.' }
         throw "TextGen failed to start.`n$tail"
     }
 }
@@ -92,7 +113,8 @@ function Set-TextGenMode([string]$Name){
         $_ -notmatch '^--spec-ngram-size-n\b' -and
         $_ -notmatch '^--spec-ngram-size-m\b' -and
         $_ -notmatch '^--draft-max\b' -and
-        $_ -notmatch '^--spec-draft-n-max\b'
+        $_ -notmatch '^--spec-draft-n-max\b' -and
+        $_ -notmatch '(?i)^--(?:mmproj|multimodal-projector)\b'
     })
 
     $ctxChanged = $false
@@ -105,13 +127,11 @@ function Set-TextGenMode([string]$Name){
     if(-not $ctxChanged){ $lines += '--ctx-size '+$Context }
 
     switch($Name){
-        'TextGen Off' {}
+        'Off'                {}
         'NGram Conservative' { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 16'; $lines += '--spec-ngram-size-m 32' }
         'NGram Medium'       { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 24'; $lines += '--spec-ngram-size-m 48' }
         'NGram Aggressive'   { $lines += '--spec-type ngram-mod'; $lines += '--spec-ngram-size-n 32'; $lines += '--spec-ngram-size-m 64' }
-        'MTP2'               { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 2' }
-        'MTP4'               { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 4' }
-        'MTP6'               { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 6' }
+        'MTP2 Reference'     { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 2' }
         default              { throw "Unknown TextGen benchmark mode: $Name" }
     }
     [IO.File]::WriteAllLines($flagsFile,$lines,([Text.UTF8Encoding]::new($false)))
@@ -119,6 +139,7 @@ function Set-TextGenMode([string]$Name){
 
 function Test-NInferReady {
     if($SkipNInfer){ return $false }
+    if($model -notmatch '(?i)Qwen3\.8-27B-Ridge-3\.7bpw\.gguf$'){ return $false }
     try{
         & wsl.exe -d $Distro -- bash -lc "test -x ~/.agentport/ninfer-src/build-sm89/apps/ninfer-serve -a -s ~/.agentport/models/qwen3_8_27b_minq4.ninfer" 2>$null | Out-Null
         return ($LASTEXITCODE -eq 0)
@@ -130,9 +151,9 @@ function Start-NInferBackend {
     $cmd = "mkdir -p ~/.agentport/logs; nohup ~/.agentport/ninfer-src/build-sm89/apps/ninfer-serve ~/.agentport/models/qwen3_8_27b_minq4.ninfer --host 0.0.0.0 --port 5100 --api-key local-textgen --model-id '$safeModel' --max-context $Context --kv-capacity $Context --max-concurrency 1 --prefill-chunk 64 --kv-dtype i4 --spec mtp --draft-tokens 3 --lm-head-draft --preserve-thinking > ~/.agentport/logs/ninfer-benchmark.log 2>&1 < /dev/null &"
     & wsl.exe -d $Distro -- bash -lc $cmd | Out-Null
     if($LASTEXITCODE -ne 0){ throw "WSL NInfer launch exited $LASTEXITCODE" }
-    try { Wait-Api 180 | Out-Null }
+    try { Wait-Api 240 | Out-Null }
     catch {
-        $tail = & wsl.exe -d $Distro -- bash -lc "tail -n 80 ~/.agentport/logs/ninfer-benchmark.log 2>/dev/null || true"
+        $tail = & wsl.exe -d $Distro -- bash -lc "tail -n 100 ~/.agentport/logs/ninfer-benchmark.log 2>/dev/null || true"
         throw "NInfer failed to start.`n$($tail -join "`n")"
     }
 }
@@ -145,16 +166,16 @@ function Get-ApiModelId {
     return $model
 }
 
-function Invoke-OneRequest([string]$ApiModel,[int]$TokenLimit){
+function Invoke-OneRequest([string]$ApiModel,[string]$TaskPrompt,[int]$TokenLimit){
     $body = @{
         model = $ApiModel
-        messages = @(@{ role='user'; content=$Prompt })
+        messages = @(@{ role='user'; content=$TaskPrompt })
         max_tokens = $TokenLimit
         temperature = 0
         stream = $false
     } | ConvertTo-Json -Depth 8
     $sw = [Diagnostics.Stopwatch]::StartNew()
-    $response = Invoke-RestMethod -Method Post -Uri ($baseUrl+'/chat/completions') -Headers $headers -Body $body -TimeoutSec 900
+    $response = Invoke-RestMethod -Method Post -Uri ($baseUrl+'/chat/completions') -Headers $headers -Body $body -TimeoutSec 1200
     $sw.Stop()
     $completion = if($response.usage -and $response.usage.completion_tokens){ [int]$response.usage.completion_tokens }else{ 0 }
     $promptTokens = if($response.usage -and $response.usage.prompt_tokens){ [int]$response.usage.prompt_tokens }else{ 0 }
@@ -175,100 +196,125 @@ function Get-VramUsedMiB {
     return 0
 }
 
-$results = @()
-$textGenModes = @('TextGen Off','NGram Conservative','NGram Medium','NGram Aggressive','MTP2','MTP4','MTP6')
-
-try{
-    foreach($mode in $textGenModes){
-        Write-Host ('[{0}/{1}] {2}' -f ($results.Count+1),($textGenModes.Count + ($(if(Test-NInferReady){1}else{0}))),$mode) -ForegroundColor Yellow
-        try{
-            Stop-LocalBackend
-            Set-TextGenMode $mode
-            Start-TextGenBackend
-            $apiModel = Get-ApiModelId
-
-            Write-Host '  warmup...' -NoNewline
-            $warm = Invoke-OneRequest $apiModel ([Math]::Min(128,$MaxTokens))
-            Write-Host (' {0:N1}s' -f $warm.Seconds)
-
-            $samples = @()
-            for($r=1;$r -le $Runs;$r++){
-                $x = Invoke-OneRequest $apiModel $MaxTokens
-                $samples += $x
-                Write-Host ('  run {0}: {1:N2} tok/s  ({2} tokens, {3:N2}s)' -f $r,$x.TokPerSec,$x.CompletionTokens,$x.Seconds)
-            }
-            $valid = @($samples | Where-Object CompletionTokens -gt 0)
-            if(-not $valid.Count){ throw 'API returned no completion token counts.' }
-            $avg = ($valid | Measure-Object TokPerSec -Average).Average
-            $min = ($valid | Measure-Object TokPerSec -Minimum).Minimum
-            $max = ($valid | Measure-Object TokPerSec -Maximum).Maximum
-            $results += [pscustomobject]@{
-                Backend='TextGen'
-                Mode=$mode
-                AverageTokPerSec=[math]::Round($avg,2)
-                MinTokPerSec=[math]::Round($min,2)
-                MaxTokPerSec=[math]::Round($max,2)
-                VramMiB=Get-VramUsedMiB
-                Status='OK'
-            }
-        }catch{
-            Write-Warning ("$mode failed: "+$_.Exception.Message)
-            $results += [pscustomobject]@{Backend='TextGen';Mode=$mode;AverageTokPerSec=0;MinTokPerSec=0;MaxTokPerSec=0;VramMiB=Get-VramUsedMiB;Status='FAILED'}
-        }
-        Write-Host ''
-    }
-
-    if(Test-NInferReady){
-        $mode='NInfer MTP3'
-        Write-Host ('Testing {0}' -f $mode) -ForegroundColor Magenta
-        try{
-            Stop-LocalBackend
-            Start-NInferBackend
-            $apiModel = Get-ApiModelId
-            Write-Host '  warmup...' -NoNewline
-            $warm = Invoke-OneRequest $apiModel ([Math]::Min(128,$MaxTokens))
-            Write-Host (' {0:N1}s' -f $warm.Seconds)
-            $samples=@()
-            for($r=1;$r -le $Runs;$r++){
-                $x=Invoke-OneRequest $apiModel $MaxTokens
-                $samples += $x
-                Write-Host ('  run {0}: {1:N2} tok/s  ({2} tokens, {3:N2}s)' -f $r,$x.TokPerSec,$x.CompletionTokens,$x.Seconds)
-            }
-            $valid=@($samples | Where-Object CompletionTokens -gt 0)
-            if(-not $valid.Count){ throw 'API returned no completion token counts.' }
-            $avg=($valid|Measure-Object TokPerSec -Average).Average
-            $min=($valid|Measure-Object TokPerSec -Minimum).Minimum
-            $max=($valid|Measure-Object TokPerSec -Maximum).Maximum
-            $results += [pscustomobject]@{Backend='NInfer';Mode=$mode;AverageTokPerSec=[math]::Round($avg,2);MinTokPerSec=[math]::Round($min,2);MaxTokPerSec=[math]::Round($max,2);VramMiB=Get-VramUsedMiB;Status='OK'}
-        }catch{
-            Write-Warning ("NInfer failed: "+$_.Exception.Message)
-            $results += [pscustomobject]@{Backend='NInfer';Mode=$mode;AverageTokPerSec=0;MinTokPerSec=0;MaxTokPerSec=0;VramMiB=Get-VramUsedMiB;Status='FAILED'}
-        }
+function Start-BenchmarkMode([string]$Backend,[string]$Mode){
+    Stop-LocalBackend
+    if($Backend -eq 'TextGen'){
+        Set-TextGenMode $Mode
+        Start-TextGenBackend
     }else{
-        Write-Host 'NInfer 4080 backend not installed, so NInfer is skipped for this run.' -ForegroundColor DarkGray
-        Write-Host ''
+        Start-NInferBackend
+    }
+    $apiModel = Get-ApiModelId
+    $warm = Invoke-OneRequest $apiModel 'Reply with READY only.' 16
+    Write-Host ('  warmup: {0:N2}s' -f $warm.Seconds) -ForegroundColor DarkGray
+    return $apiModel
+}
+
+function Invoke-Suite([string]$Backend,[string]$Mode,[string]$Suite,[string[]]$Prompts){
+    Write-Host ("$Backend / $Mode / $Suite") -ForegroundColor Yellow
+    $apiModel = Start-BenchmarkMode $Backend $Mode
+    $samples = @()
+    for($i=0;$i -lt $Prompts.Count;$i++){
+        $x = Invoke-OneRequest $apiModel $Prompts[$i] $MaxTokens
+        $samples += $x
+        Write-Host ('  task {0}/{1}: {2:N2} tok/s  ({3} tokens, {4:N2}s)' -f ($i+1),$Prompts.Count,$x.TokPerSec,$x.CompletionTokens,$x.Seconds)
+    }
+    $valid = @($samples | Where-Object CompletionTokens -gt 0)
+    if(-not $valid.Count){ throw 'API returned no completion token counts.' }
+    $avg = ($valid | Measure-Object TokPerSec -Average).Average
+    $min = ($valid | Measure-Object TokPerSec -Minimum).Minimum
+    $max = ($valid | Measure-Object TokPerSec -Maximum).Maximum
+    $tokens = ($valid | Measure-Object CompletionTokens -Sum).Sum
+    [pscustomobject]@{
+        Backend=$Backend
+        Mode=$Mode
+        Suite=$Suite
+        AverageTokPerSec=[math]::Round($avg,2)
+        MinTokPerSec=[math]::Round($min,2)
+        MaxTokPerSec=[math]::Round($max,2)
+        CompletionTokens=[int]$tokens
+        VramMiB=Get-VramUsedMiB
+        Status='OK'
+    }
+}
+
+$modes = @(
+    [pscustomobject]@{Backend='TextGen';Mode='Off'},
+    [pscustomobject]@{Backend='TextGen';Mode='NGram Conservative'},
+    [pscustomobject]@{Backend='TextGen';Mode='NGram Medium'},
+    [pscustomobject]@{Backend='TextGen';Mode='NGram Aggressive'}
+)
+if($IncludeNativeMtp){ $modes += [pscustomobject]@{Backend='TextGen';Mode='MTP2 Reference'} }
+$ninferReady = Test-NInferReady
+if($ninferReady){ $modes += [pscustomobject]@{Backend='NInfer';Mode='MTP3 min-Q4'} }
+
+$results = @()
+try{
+    foreach($m in $modes){
+        foreach($suite in @('Fresh','RepetitiveAgent')){
+            $prompts = if($suite -eq 'Fresh'){ $FreshPrompts }else{ $RepetitivePrompts }
+            try{
+                $results += Invoke-Suite $m.Backend $m.Mode $suite $prompts
+            }catch{
+                Write-Warning ("$($m.Backend) / $($m.Mode) / $suite failed: "+$_.Exception.Message)
+                $results += [pscustomobject]@{Backend=$m.Backend;Mode=$m.Mode;Suite=$suite;AverageTokPerSec=0;MinTokPerSec=0;MaxTokPerSec=0;CompletionTokens=0;VramMiB=Get-VramUsedMiB;Status='FAILED'}
+            }
+            Write-Host ''
+        }
     }
 }
 finally{
-    Write-Host 'Restoring your original TextGen flags and backend...' -ForegroundColor DarkGray
+    Write-Host 'Restoring original TextGen flags and backend...' -ForegroundColor DarkGray
     try{
         [IO.File]::WriteAllText($flagsFile,$originalFlags,([Text.UTF8Encoding]::new($false)))
         Stop-LocalBackend
         Start-TextGenBackend
         Write-Host 'Original AgentPort/TextGen backend restored.' -ForegroundColor Green
     }catch{
-        Write-Warning ('Could not automatically restore the backend: '+$_.Exception.Message)
-        Write-Warning 'Your original CMD_FLAGS.txt was restored. Click Apply / Switch in AgentPort to restart TextGen.'
+        Write-Warning ('Could not automatically restart the original backend: '+$_.Exception.Message)
+        Write-Warning 'CMD_FLAGS.txt was restored. Click Apply / Switch in AgentPort to restart it.'
+    }
+}
+
+$summary = @()
+foreach($m in $modes){
+    $fresh = $results | Where-Object { $_.Backend -eq $m.Backend -and $_.Mode -eq $m.Mode -and $_.Suite -eq 'Fresh' } | Select-Object -First 1
+    $agent = $results | Where-Object { $_.Backend -eq $m.Backend -and $_.Mode -eq $m.Mode -and $_.Suite -eq 'RepetitiveAgent' } | Select-Object -First 1
+    $freshAvg = if($fresh){[double]$fresh.AverageTokPerSec}else{0}
+    $agentAvg = if($agent){[double]$agent.AverageTokPerSec}else{0}
+    $combined = if($freshAvg -gt 0 -and $agentAvg -gt 0){($freshAvg+$agentAvg)/2}else{0}
+    $summary += [pscustomobject]@{
+        Backend=$m.Backend
+        Mode=$m.Mode
+        FreshTokPerSec=[math]::Round($freshAvg,2)
+        RepetitiveAgentTokPerSec=[math]::Round($agentAvg,2)
+        BalancedAverage=[math]::Round($combined,2)
+        VramMiB=[math]::Max($(if($fresh){$fresh.VramMiB}else{0}),$(if($agent){$agent.VramMiB}else{0}))
     }
 }
 
 Write-Host ''
-Write-Host '================ BENCHMARK RESULTS ================' -ForegroundColor Cyan
-$results | Sort-Object AverageTokPerSec -Descending | Format-Table Backend,Mode,AverageTokPerSec,MinTokPerSec,MaxTokPerSec,VramMiB,Status -AutoSize
-$winner = $results | Where-Object { $_.Status -eq 'OK' -and $_.AverageTokPerSec -gt 0 } | Sort-Object AverageTokPerSec -Descending | Select-Object -First 1
-if($winner){
-    Write-Host ('WINNER: {0} / {1} at {2:N2} tok/s average' -f $winner.Backend,$winner.Mode,$winner.AverageTokPerSec) -ForegroundColor Green
-}else{
-    Write-Warning 'No benchmark mode completed successfully.'
+Write-Host '================ REAL-WORLD BENCHMARK RESULTS ================' -ForegroundColor Cyan
+$summary | Sort-Object BalancedAverage -Descending | Format-Table -AutoSize
+
+$freshWinner = $summary | Where-Object FreshTokPerSec -gt 0 | Sort-Object FreshTokPerSec -Descending | Select-Object -First 1
+$agentWinner = $summary | Where-Object RepetitiveAgentTokPerSec -gt 0 | Sort-Object RepetitiveAgentTokPerSec -Descending | Select-Object -First 1
+$balancedWinner = $summary | Where-Object BalancedAverage -gt 0 | Sort-Object BalancedAverage -Descending | Select-Object -First 1
+if($freshWinner){ Write-Host ('FRESH WINNER:      {0} / {1} at {2:N2} tok/s' -f $freshWinner.Backend,$freshWinner.Mode,$freshWinner.FreshTokPerSec) -ForegroundColor Green }
+if($agentWinner){ Write-Host ('AGENT WINNER:      {0} / {1} at {2:N2} tok/s' -f $agentWinner.Backend,$agentWinner.Mode,$agentWinner.RepetitiveAgentTokPerSec) -ForegroundColor Green }
+if($balancedWinner){ Write-Host ('BALANCED WINNER:   {0} / {1} at {2:N2} tok/s' -f $balancedWinner.Backend,$balancedWinner.Mode,$balancedWinner.BalancedAverage) -ForegroundColor Green }
+
+if(-not $ninferReady -and -not $SkipNInfer){
+    Write-Host ''
+    Write-Host 'NInfer was not installed, so it was not benchmarked. Run Install-NInfer4080.cmd, then run this benchmark again.' -ForegroundColor Magenta
 }
-Write-Host '===================================================' -ForegroundColor Cyan
+
+$stamp = Get-Date -Format 'yyyyMMdd-HHmmss'
+$outDir = $PSScriptRoot
+$summaryCsv = Join-Path $outDir ("AgentPort4080-Benchmark-Summary-$stamp.csv")
+$detailCsv = Join-Path $outDir ("AgentPort4080-Benchmark-Detail-$stamp.csv")
+$summary | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $summaryCsv
+$results | Export-Csv -NoTypeInformation -Encoding UTF8 -Path $detailCsv
+Write-Host ''
+Write-Host ('Saved summary: {0}' -f $summaryCsv) -ForegroundColor DarkGray
+Write-Host ('Saved detail:  {0}' -f $detailCsv) -ForegroundColor DarkGray
