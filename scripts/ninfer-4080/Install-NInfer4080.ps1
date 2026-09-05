@@ -6,6 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+$InstallerBuild = 'ninfer-4080-installer-v3-2026-09-05'
 $Repo = 'https://github.com/aljazceru/ninfer.git'
 $Root = '~/.agentport'
 $Source = "$Root/ninfer-src"
@@ -14,20 +15,23 @@ $Models = "$Root/models"
 $ModelRepo = 'aaaljaz/qwen3.8-27b-ninfer-minq4'
 $ModelFile = 'qwen3_8_27b_minq4.ninfer'
 
+Write-Host "Installer build: $InstallerBuild" -ForegroundColor Cyan
+
 function Invoke-WslBash {
     param([Parameter(Mandatory)][string]$Command)
-    # PowerShell here-strings use Windows CRLF. bash -lc receives those CR bytes
-    # literally through wsl.exe, which breaks `set -euo pipefail` and backslash
-    # continuations. Normalise every multiline command to Unix LF before execution.
-    $normalized = $Command.Replace("`r`n", "`n").Replace("`r", '')
+    # PowerShell here-strings use Windows CRLF. Normalise to Unix LF before Bash sees them.
+    $normalized = ([string]$Command).Replace("`r`n", "`n").Replace("`r", '')
     & wsl.exe -d $Distro -- bash -lc $normalized
     if ($LASTEXITCODE -ne 0) { throw "WSL command failed with exit code $LASTEXITCODE.`n$normalized" }
 }
 
 function Get-WslDistros {
     $items = & wsl.exe -l -q 2>$null
-    if ($LASTEXITCODE -ne 0) { return @() }
-    @($items | ForEach-Object { ($_ -replace "`0",'').Trim() } | Where-Object { $_ })
+    if ($LASTEXITCODE -ne 0 -or $null -eq $items) { return @() }
+    @($items | ForEach-Object {
+        $s = ([string]($_ -replace "`0", '')).Trim()
+        if($s){ $s }
+    })
 }
 
 $distros = Get-WslDistros
@@ -61,8 +65,7 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-venv
 '@
 
-# nvcc is expected to be absent on a fresh Ubuntu install. Never call .Trim() on
-# the command result directly because PowerShell returns $null when there is no output.
+# nvcc is normally absent on a fresh Ubuntu install. Capture output safely.
 $nvccRaw = & wsl.exe -d $Distro -- bash -lc "if command -v nvcc >/dev/null 2>&1; then nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | tail -n1; fi"
 $nvccVersion = ([string]$nvccRaw).Trim()
 $needCuda = $true
