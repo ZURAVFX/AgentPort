@@ -25,18 +25,17 @@ function Invoke-WslBash([string]$Command) {
     if ($LASTEXITCODE -ne 0) { throw "WSL command failed with exit code $LASTEXITCODE.`n$Command" }
 }
 
-# Free the AgentPort local API port if TextGen is currently listening there.
 Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
     ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
 
-# Stop an older WSL NInfer instance, if present.
 & wsl.exe -d $Distro -- bash -lc "pkill -f 'ninfer-serve.*--port $Port' >/dev/null 2>&1 || true" | Out-Null
-
 Invoke-WslBash "test -x $Server"
 Invoke-WslBash "test -s $Model"
 
-$escapedModelId = $ModelId.Replace("'", "'\"'\"'")
-$escapedKey = $ApiKey.Replace("'", "'\"'\"'")
+# The model id and API key are only used as single shell arguments; remove apostrophes to keep
+# the WSL launch command unambiguous rather than trying to emulate Bash quoting in PowerShell.
+$escapedModelId = $ModelId.Replace("'", '')
+$escapedKey = $ApiKey.Replace("'", '')
 $cmd = @"
 set -euo pipefail
 mkdir -p $Root/logs
@@ -55,7 +54,7 @@ nohup $Server $Model \
   --lm-head-draft \
   --preserve-thinking \
   > $Log 2>&1 < /dev/null &
-echo \$!
+echo `$!
 "@
 
 $pidText = (& wsl.exe -d $Distro -- bash -lc $cmd | Select-Object -Last 1).Trim()
