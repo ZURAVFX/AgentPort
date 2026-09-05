@@ -107,15 +107,16 @@ $oldSpec = @'
 '@
 
 $newSpec = @'
-    # Qwen3.8 Ridge retains the model's native MTP head. Prefer real MTP over generic n-gram
-    # speculation. Keep the modes as MTP-only because combined speculative modes have shown
-    # recent regressions on Qwen3.8's hybrid architecture.
+    # Qwen3.8 Ridge retains the model's native MTP head. TextGen's server.py accepts
+    # --draft-max and translates it to llama-server's --spec-draft-n-max internally.
+    # Keep the modes MTP-only because combined speculative modes have shown recent
+    # regressions on Qwen3.8's hybrid architecture.
     $isQwen38Mtp = ([string]$Model -match '(?i)Qwen3\.8-27B.*\.gguf$')
     if($isQwen38Mtp -and $SpecMode -ne 'Off'){
         switch($SpecMode){
-            'Conservative' { $lines += '--spec-type draft-mtp'; $lines += '--spec-draft-n-max 2' }
-            'Medium'       { $lines += '--spec-type draft-mtp'; $lines += '--spec-draft-n-max 4' }
-            'Aggressive'   { $lines += '--spec-type draft-mtp'; $lines += '--spec-draft-n-max 6' }
+            'Conservative' { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 2' }
+            'Medium'       { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 4' }
+            'Aggressive'   { $lines += '--spec-type draft-mtp'; $lines += '--draft-max 6' }
         }
     } else {
         switch($SpecMode){
