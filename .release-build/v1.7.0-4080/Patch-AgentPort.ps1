@@ -108,13 +108,14 @@ $oldSpec = @'
 
 $newSpec = @'
     # Qwen3.8 Ridge retains the model's native MTP head. Prefer real MTP over generic n-gram
-    # speculation; keep ngram-mod as an additional aggressive draft source.
+    # speculation. Keep the modes as MTP-only because combined speculative modes have shown
+    # recent regressions on Qwen3.8's hybrid architecture.
     $isQwen38Mtp = ([string]$Model -match '(?i)Qwen3\.8-27B.*\.gguf$')
     if($isQwen38Mtp -and $SpecMode -ne 'Off'){
         switch($SpecMode){
             'Conservative' { $lines += '--spec-type draft-mtp'; $lines += '--spec-draft-n-max 2' }
             'Medium'       { $lines += '--spec-type draft-mtp'; $lines += '--spec-draft-n-max 4' }
-            'Aggressive'   { $lines += '--spec-type draft-mtp,ngram-mod'; $lines += '--spec-draft-n-max 6'; $lines += '--spec-ngram-size-n 24'; $lines += '--spec-ngram-size-m 48' }
+            'Aggressive'   { $lines += '--spec-type draft-mtp'; $lines += '--spec-draft-n-max 6' }
         }
     } else {
         switch($SpecMode){
