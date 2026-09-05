@@ -36,7 +36,8 @@ if ($distros -notcontains $Distro) {
 }
 
 Write-Host 'Checking NVIDIA GPU exposed to WSL...'
-$gpu = (& wsl.exe -d $Distro -- bash -lc "nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader 2>/dev/null | head -n1").Trim()
+$gpuRaw = & wsl.exe -d $Distro -- bash -lc "nvidia-smi --query-gpu=name,memory.total,compute_cap --format=csv,noheader 2>/dev/null | head -n1"
+$gpu = ([string]$gpuRaw).Trim()
 if (-not $gpu) { throw 'NVIDIA GPU is not visible inside WSL. Update the NVIDIA Windows driver and verify `wsl nvidia-smi` works.' }
 Write-Host "GPU: $gpu"
 if ($gpu -notmatch 'RTX 4080') {
@@ -60,10 +61,16 @@ sudo DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3 python3-venv
 '@
 
-$nvccVersion = (& wsl.exe -d $Distro -- bash -lc "if command -v nvcc >/dev/null 2>&1; then nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | tail -n1; fi").Trim()
+# nvcc is expected to be absent on a fresh Ubuntu install. Never call .Trim() on
+# the command result directly because PowerShell returns $null when there is no output.
+$nvccRaw = & wsl.exe -d $Distro -- bash -lc "if command -v nvcc >/dev/null 2>&1; then nvcc --version | sed -n 's/.*release \([0-9][0-9]*\.[0-9][0-9]*\).*/\1/p' | tail -n1; fi"
+$nvccVersion = ([string]$nvccRaw).Trim()
 $needCuda = $true
 if ($nvccVersion) {
+    Write-Host "Found CUDA toolkit nvcc $nvccVersion"
     try { if ([version]$nvccVersion -ge [version]'12.4') { $needCuda = $false } } catch {}
+}else{
+    Write-Host 'No CUDA toolkit compiler found in WSL yet; installation is expected.' -ForegroundColor DarkGray
 }
 
 if ($needCuda) {
