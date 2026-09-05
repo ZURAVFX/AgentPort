@@ -1,0 +1,62 @@
+name: Build AgentPort RTX 4080 backend
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/ninfer-rtx4080
+    paths:
+      - '.release-build/v1.7.0-4080/**'
+      - 'scripts/ninfer-4080/**'
+      - '.github/workflows/build-ninfer-rtx4080.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build-agentport:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Generate patched v1.7.0-4080 runtime
+        shell: powershell
+        run: |
+          $out = Join-Path $PWD '.release-build\v1.7.0-4080\generated'
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & '.\.release-build\v1.7.0-4080\Patch-AgentPort.ps1' `
+            -InputPath '.\.release-build\v1.6.2\AgentPort_v1.6.2.ps1' `
+            -OutputPath (Join-Path $out 'AgentPort_v1.7.0-4080.ps1')
+
+          $main = Get-Content '.\.release-build\v1.6.2\main.go' -Raw
+          $main = $main.Replace('1.6.2','1.7.0-4080')
+          [IO.File]::WriteAllText((Join-Path $out 'main.go'),$main,([Text.UTF8Encoding]::new($false)))
+          Copy-Item '.\.release-build\v1.6.2\agentport-icon.b64' (Join-Path $out 'agentport-icon.b64')
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+
+      - name: Build Windows launcher
+        shell: powershell
+        run: |
+          $dir = '.\.release-build\v1.7.0-4080\generated'
+          Push-Location $dir
+          go mod init agentport-v170-4080
+          go build -ldflags='-s -w -H=windowsgui' -o 'AgentPort_v1.7.0-4080.exe' .
+          Pop-Location
+
+      - name: Validate generated package
+        shell: powershell
+        run: |
+          $dir = '.\.release-build\v1.7.0-4080\generated'
+          if(-not (Test-Path (Join-Path $dir 'AgentPort_v1.7.0-4080.exe'))){ throw 'EXE missing' }
+          if((Get-Item (Join-Path $dir 'AgentPort_v1.7.0-4080.exe')).Length -lt 100000){ throw 'EXE unexpectedly small' }
+          Select-String -Path (Join-Path $dir 'AgentPort_v1.7.0-4080.ps1') -Pattern 'Start-AgentPortNInfer4080IfEligible' -Quiet | ForEach-Object { if(-not $_){ throw 'NInfer injection missing' } }
+          Select-String -Path (Join-Path $dir 'AgentPort_v1.7.0-4080.ps1') -Pattern '--spec-type draft-mtp' -Quiet | ForEach-Object { if(-not $_){ throw 'native MTP flags missing' } }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentPort-v1.7.0-4080
+          path: .release-build/v1.7.0-4080/generated/AgentPort_v1.7.0-4080.exe
+          if-no-files-found: error
