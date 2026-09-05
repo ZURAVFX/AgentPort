@@ -76,9 +76,14 @@ jobs:
           if(-not (Select-String -Path $runtime -Pattern '--spec-type draft-mtp' -Quiet)){ throw 'native MTP spec type missing' }
           if(-not (Select-String -Path $runtime -Pattern '--draft-max 4' -Quiet)){ throw 'TextGen draft-max launcher flag missing' }
           if(Select-String -Path $runtime -Pattern '--spec-draft-n-max' -Quiet){ throw 'raw llama-server MTP flag leaked into TextGen CMD flags' }
+          if(-not (Test-Path '.\scripts\ninfer-4080\Benchmark-AgentPortMatrix.ps1')){ throw 'benchmark matrix script missing' }
+          if(-not (Test-Path '.\scripts\ninfer-4080\Run-AgentPort4080-Benchmark.cmd')){ throw 'one-click benchmark launcher missing' }
 
       - uses: actions/upload-artifact@v4
         with:
-          name: AgentPort-v1.7.0-4080
-          path: .release-build/v1.7.0-4080/generated/AgentPort_v1.7.0-4080.exe
+          name: AgentPort-v1.7.0-4080-testkit
+          path: |
+            .release-build/v1.7.0-4080/generated/AgentPort_v1.7.0-4080.exe
+            scripts/ninfer-4080/Benchmark-AgentPortMatrix.ps1
+            scripts/ninfer-4080/Run-AgentPort4080-Benchmark.cmd
           if-no-files-found: error
