@@ -10,6 +10,103 @@ function Stop-AgentPortProcess {
     }
 }
 
+function Stop-VerifiedAgentPortProcess {
+    param([int]$Port,[ValidateSet('backend','harness')][string]$Kind)
+    $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
+    foreach($listener in $listeners){
+        $process=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
+        if(-not $process){continue}
+        $command=[string]$process.CommandLine
+        $executable=[string]$process.ExecutablePath
+        $allowed=if($Kind -eq 'harness'){
+            $command -like '*dsh web*' -or $command -like '*apps/cli/src/bin.ts*"web"*' -or
+            ($script:Config.harness_root -and $command -like ('*'+[string]$script:Config.harness_root+'*'))
+        } else {
+            $command -like '*llama-server*' -or
+            ($command -like '*server.py*' -and $script:Config.textgen_root -and $executable -like ([string]$script:Config.textgen_root+'*'))
+        }
+        if($allowed){& taskkill.exe /PID $process.ProcessId /T /F | Out-Null}
+    }
+}
+
+function Stop-StaleNInferInstances {
+    $temp=Join-Path $env:LOCALAPPDATA 'AgentPort/ninfer-stop'
+    New-Item -ItemType Directory -Force -Path $temp | Out-Null
+    $distro=Get-AgentPortNInferDistro
+    $linuxHome=((& wsl.exe -d $distro --exec printenv HOME) -join '').Trim()
+    if($linuxHome -notmatch '^/[A-Za-z0-9._/-]+$'){return}
+    $exe="$linuxHome/.agentport/ninfer-src/build-sm89/apps/ninfer-serve"
+    $command=@'
+set -eu
+for file in '__ROOT__'/logs/agentport-*.pid '__ROOT__'/logs/agentport.pid; do
+  test -f "$file" || continue
+  read -r target < "$file"
+  case "$target" in ''|*[!0-9]*) continue;; esac
+  if test "$(readlink /proc/$target/exe 2>/dev/null || true)" = '__EXE__'; then kill -TERM "$target"; fi
+  rm -f "$file"
+done
+'@
+    try {Invoke-NInferShell $distro ($command.Replace('__ROOT__',"$linuxHome/.agentport").Replace('__EXE__',$exe)) $temp | Out-Null}catch{}
+}
+
+function Test-AgentPortNInferInstalled {
+    try {
+        $distro=Get-AgentPortNInferDistro
+        $linuxHome=((& wsl.exe -d $distro --exec printenv HOME) -join '').Trim()
+        if($linuxHome -notmatch '^/[A-Za-z0-9._/-]+$'){return $false}
+        & wsl.exe -d $distro --exec test -x "$linuxHome/.agentport/ninfer-src/build-sm89/apps/ninfer-serve"
+        if($LASTEXITCODE -ne 0){return $false}
+        & wsl.exe -d $distro --exec test -s "$linuxHome/.agentport/models/qwen3_8_27b_minq4.ninfer"
+        return ($LASTEXITCODE -eq 0)
+    } catch {return $false}
+}
+
+function Refresh-NInferControls {
+    $installed=Test-AgentPortNInferInstalled
+    if($InstallNInferButton){$InstallNInferButton.Content=if($installed){'Repair NInfer'}else{'Install NInfer'}}
+    if($UseNInferButton){$UseNInferButton.ToolTip=if($installed){'Start the verified 24k MTP3 profile'}else{'Runs the guided one-time setup first'}}
+}
+
+function Update-BackendSelectionUi {
+    $selected=Get-SelectedModel
+    $ninfer=($selected -and $selected.Source -eq 'NInfer')
+    foreach($control in @($CacheCombo,$OffloadCombo,$SpecCombo)){if($control){$control.IsEnabled=-not $ninfer}}
+    if($ninfer){
+        $PrimaryButton.Content='Start NInfer + Harness'
+        $StatusText.Text='NInfer selected: stock Qwen3.8 27B min-Q4, INT4 KV and MTP3.'
+    } else {
+        $PrimaryButton.Content='Apply & Start'
+        $StatusText.Text='The selected GGUF will use TextGen with DeepSeek Harness.'
+    }
+}
+
+function Select-AndStartNInfer {
+    param([int]$Context=24576)
+    if(-not (Test-AgentPortNInferInstalled)){
+        $answer=[Windows.MessageBox]::Show('NInfer needs a one-time setup and model download. Start setup now?','NInfer setup',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
+        if($answer -ne [Windows.MessageBoxResult]::Yes){return}
+        Install-AgentPortNInfer
+        if(-not (Test-AgentPortNInferInstalled)){return}
+    }
+    for($index=0;$index -lt $script:Models.Count;$index++){
+        if($script:Models[$index].Source -eq 'NInfer'){$ModelCombo.SelectedIndex=$index;break}
+    }
+    $label=@($script:ContextPresets.Keys | Where-Object {$script:ContextPresets[$_] -eq $Context})[0]
+    if($label){$ContextCombo.SelectedItem=$label}
+    Start-UnifiedStack
+}
+
+function Install-AgentPortNInfer {
+    $setup=Join-Path $PSScriptRoot 'ninfer-4080/Bootstrap-NInfer4080.ps1'
+    if(-not (Test-Path $setup)){throw "NInfer setup is missing: $setup"}
+    $process=Start-Process powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$setup+'"')) -Wait -PassThru
+    if($process.ExitCode -eq 0){
+        Refresh-Models
+        Refresh-NInferControls
+        [Windows.MessageBox]::Show('NInfer is installed. Choose Use NInfer (Fast) to start it.','NInfer ready') | Out-Null
+    } else {[Windows.MessageBox]::Show('NInfer setup did not finish. The setup window contains the exact reason.','NInfer setup') | Out-Null}
+}
+
 function New-NInferHarnessPatch {
     param([string]$Path,[string]$SettingsPath='')
     $lines=@("- id: session-title-llm`n  disabled: true")
@@ -29,10 +126,16 @@ function New-NInferHarnessPatch {
 function Start-AgentPortNInfer {
     try {
         $PrimaryButton.IsEnabled=$false
-        if(Test-Port 3080){throw 'Close the existing Harness before switching to the NInfer coding profile.'}
-        Set-LaunchPhase 1 'Starting NInfer' 'Loading Qwen3.8 27B min-Q4, 24k context, MTP3.' 20
+        Kill-Stack
+        Start-Sleep -Milliseconds 700
+        if((Test-Port 3080) -or (Test-Port 5100)){throw 'A backend started outside AgentPort is still running. Close it, then retry.'}
+        $selectedLabel=[string]$ContextCombo.SelectedItem
+        $selectedContext=[int]$script:ContextPresets[$selectedLabel]
+        $context=if($selectedContext -ge 49152){49152}else{24576}
+        $profile=if($context -eq 49152){'maximum 49k context'}else{'fast/reliable 24k context'}
+        Set-LaunchPhase 1 'Starting NInfer' ("Loading Qwen3.8 27B min-Q4, $profile, MTP3.") 20
         if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
-        $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context 24576 -Draft 3
+        $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
         $script:PendingModel=$script:NInferState.Model
         $script:PendingContext=$script:NInferState.Context
         $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply READY.'});max_tokens=16;temperature=0;stream=$false}
@@ -42,7 +145,7 @@ function Start-AgentPortNInfer {
         $script:Config.active_model=$script:PendingModel
         $script:Config.active_context_tokens=$script:PendingContext
         Save-Config
-        Set-Log 'NInfer verified | stock Qwen3.8 27B min-Q4 | 24,576 context | INT4 KV | MTP3' 'ok'
+        Set-Log ("NInfer verified | stock Qwen3.8 27B min-Q4 | $context context | INT4 KV | MTP3") 'ok'
         Set-LaunchPhase 6 'Starting Harness' 'NInfer completion verified. Connecting Harness.' 92
         $script:NInferHarnessPatch=New-NInferHarnessPatch (Join-Path $script:NInferState.LogDirectory 'coding.patch.yml')
         Start-Harness

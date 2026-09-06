@@ -6,7 +6,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$InstallerBuild = 'ninfer-4080-installer-v10-2026-09-05'
+$InstallerBuild = 'ninfer-4080-installer-v11-2026-09-06'
 $Repo = 'https://github.com/aljazceru/ninfer.git'
 $BaseCommit = '024b3ea4b91b67fdd75d8ca947e2a58a4258237b'
 $AdaPortCommit = '39a6f20ca982f93adea52ed7941c3bd68af64111'
@@ -132,6 +132,12 @@ try {
         $reuse = $true
     } catch { Write-Host 'A matching installed build was not found; preparing the pinned build.' }
     if($reuse){Write-Host 'Reusing the installed pinned sm_89 build.' -ForegroundColor Green}
+    $freeKib=(& wsl.exe -d $Distro -- df -k --output=avail $LinuxHome | Select-Object -Last 1)
+    if($LASTEXITCODE -ne 0){throw 'Could not check free space inside Ubuntu WSL.'}
+    & wsl.exe -d $Distro -- test -s "$Models/$ModelFile"
+    $hasModel=($LASTEXITCODE -eq 0)
+    if(-not $reuse -and [int64]$freeKib -lt 40000000){throw 'A fresh NInfer setup needs at least 40 GB free inside the Ubuntu WSL filesystem.'}
+    if($reuse -and -not $hasModel -and [int64]$freeKib -lt 18000000){throw 'The NInfer model download needs at least 18 GB free inside Ubuntu WSL.'}
     if(-not $reuse){
 
     Set-Stage '3/10 Validate WSL administrator access'
@@ -241,7 +247,7 @@ cmake -S '$Source' -B '$Build' -G Ninja \
   -DNINFER_BUILD_APPS=ON \
   -DBUILD_TESTING=OFF \
   -DNINFER_BUILD_BENCHMARKS=OFF
-cmake --build '$Build' --parallel `$(nproc) --target ninfer ninfer-serve
+cmake --build '$Build' --parallel 4 --target ninfer ninfer-serve
 "@
     }
 
@@ -253,13 +259,20 @@ cmake --build '$Build' --parallel `$(nproc) --target ninfer ninfer-serve
         Set-Stage '10/10 Download Qwen3.8 min-Q4 NInfer artifact'
         Invoke-WslBash @"
 set -euo pipefail
+expected=0a55e94e687f5ee11bbf782edd2e1b1161fa8dac09fb1b8307e93a072de8666a
 if test -s '$Models/$ModelFile'; then
-  echo 'Existing model artifact retained; startup validation will check that it loads.'
-  exit 0
+  echo 'Verifying the existing model checksum...'
+  if echo "`$expected  $Models/$ModelFile" | sha256sum -c -; then exit 0; fi
+  echo 'The existing artifact failed verification. Move it aside before rerunning setup; it has been preserved.' >&2
+  exit 2
 fi
+mkdir -p '$Models'
+available=`$(df -Pk '$Models' | awk 'NR==2 {print `$4}')
+if test "`$available" -lt 18000000; then echo 'At least 18 GB of free space is required for the model download.' >&2; exit 2; fi
 python3 -m venv '$Root/hf-venv'
 '$Root/hf-venv/bin/pip' install -q -U huggingface_hub
-'$Root/hf-venv/bin/hf' download '$ModelRepo' '$ModelFile' --local-dir '$Models'
+'$Root/hf-venv/bin/hf' download '$ModelRepo' '$ModelFile' --revision ac4ca27d5a009867f7b66686d3038026fed2fac9 --local-dir '$Models'
+echo "`$expected  $Models/$ModelFile" | sha256sum -c -
 "@
         Invoke-WslBash "test -s '$Models/$ModelFile'"
         Write-Host "Model ready: $Models/$ModelFile"

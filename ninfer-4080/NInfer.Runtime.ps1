@@ -15,8 +15,8 @@ function Invoke-NInferShell {
 function Start-NInferService {
     param([string]$Distro='Ubuntu-24.04',[int]$Context=24576,
           [int]$Draft=3,[int]$Port=5100,[string]$LogDirectory=(Join-Path $env:LOCALAPPDATA 'AgentPort\ninfer'),
-          [int]$TimeoutSeconds=120)
-    if($Context -lt 2048 -or $Context -gt 32768){throw 'NInfer context must be between 2048 and 32768 on this 16 GB profile.'}
+          [int]$TimeoutSeconds=120,[ValidateSet(64,128,256)][int]$Prefill=64)
+    if($Context -lt 2048 -or $Context -gt 131072){throw 'NInfer context must be between 2048 and 131072.'}
     if($Draft -lt 0 -or $Draft -gt 6){throw 'Draft must be between 0 (off) and 6.'}
     if($Port -lt 1024 -or $Port -gt 65535){throw 'Invalid port.'}
     $gpuFree=((& wsl.exe -d $Distro --exec /usr/lib/wsl/lib/nvidia-smi --query-gpu=memory.free --format=csv,noheader,nounits) | Select-Object -First 1)
@@ -43,7 +43,7 @@ function Start-NInferService {
 set -euo pipefail
 mkdir -p '$root/logs'
 echo `$$ > '$pidFile'
-exec '$exe' '$artifact' --host 127.0.0.1 --port $Port --api-key local-textgen --model-id '$model' --max-context $Context --kv-capacity $Context --max-concurrency 1 --prefill-chunk 64 --kv-dtype i4 $spec --preserve-thinking
+exec '$exe' '$artifact' --host 127.0.0.1 --port $Port --api-key local-textgen --model-id '$model' --max-context $Context --kv-capacity $Context --max-concurrency 1 --prefill-chunk $Prefill --kv-dtype i4 $spec --preserve-thinking
 "@
     [IO.File]::WriteAllText($launch,$command.Replace("`r`n","`n"),[Text.UTF8Encoding]::new($false))
     $linuxLaunch=((& wsl.exe -d $Distro --exec wslpath -u $launch.Replace('\','/')) -join '').Trim()
@@ -57,6 +57,8 @@ exec '$exe' '$artifact' --host 127.0.0.1 --port $Port --api-key local-textgen --
         while($clock.Elapsed.TotalSeconds -lt $TimeoutSeconds){
             $process.Refresh()
             $tail=((Get-Content -LiteralPath $out,$err -Tail 12 -ErrorAction SilentlyContinue) -join "`n")
+            $firstError=Get-Content -LiteralPath $out,$err -ErrorAction SilentlyContinue | Select-String '\[error\]|^error:' | Select-Object -First 1
+            if($firstError){$tail=[string]$firstError+"`n"+$tail}
             if($process.HasExited){throw "NInfer exited ($($process.ExitCode)) after $([int]$clock.Elapsed.TotalSeconds)s.`n$tail"}
             if($tail -match '(?im)^error:|CUDA error|out of memory'){throw "NInfer startup failed.`n$tail"}
             try {

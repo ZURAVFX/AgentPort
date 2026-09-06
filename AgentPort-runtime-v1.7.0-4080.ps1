@@ -1,4 +1,4 @@
-param([switch]$SmokeTest)
+param([switch]$SmokeTest,[switch]$IntegrationTest)
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -15,9 +15,10 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.7.3-4080'
+$script:AppVersion = '1.7.4-4080'
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.NInfer.ps1')
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Mcp.ps1')
 $script:ConfigDir = Join-Path $env:USERPROFILE '.dsh'
 $script:ConfigFile = Join-Path $script:ConfigDir 'launcher_config.json'
 $script:SettingsPath = Join-Path $script:ConfigDir 'settings.yaml'
@@ -33,6 +34,7 @@ $script:StatusBusy = $false
 $script:BootstrapProcess = $null
 $script:BootstrapLog = ''
 $script:TextGenProcess = $null
+$script:HarnessProcess = $null
 $script:LaunchPhase = 0
 $script:InstallOnlyMode = $false
 $script:LastModelScanRoots = @()
@@ -61,6 +63,7 @@ $script:Defaults = [ordered]@{
 }
 
 $script:ContextPresets = [ordered]@{
+    '24k (24,576 tokens) - NInfer fast/reliable' = 24576
     '32k (32,768 tokens)' = 32768
     '48k (49,152 tokens)' = 49152
     '64k (65,536 tokens)' = 65536
@@ -1445,10 +1448,16 @@ function Kill-Stack {
     if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
     Stop-AgentPortProcess $script:TextGenProcess
     Stop-AgentPortProcess $script:HarnessProcess
+    Stop-VerifiedAgentPortProcess 5100 'backend'
+    Stop-VerifiedAgentPortProcess 3080 'harness'
+    Stop-StaleNInferInstances
+    $script:TextGenProcess=$null;$script:HarnessProcess=$null
 }
 
 function Kill-HarnessOnly {
     Stop-AgentPortProcess $script:HarnessProcess
+    Stop-VerifiedAgentPortProcess 3080 'harness'
+    $script:HarnessProcess=$null
 }
 
 function Prepare-IsolatedHarnessSkills {
@@ -1969,10 +1978,12 @@ function Start-Harness {
         $npx=Ensure-PortableNode
         $cmd = 'set "TEXTGEN_API_KEY=local-textgen"&& set "UNSLOTH_STUDIO_API_KEY=local-textgen"&& set "FREETOKEN_API_KEY=local-textgen"&& set "DSH_STUDIO_MODEL={0}"&& set "DSH_STUDIO_CONTEXT={1}"&& set "npm_config_cache={2}"&& "{3}" --yes @deepseek-ai/dsh@latest web --no-open > "{4}" 2> "{5}"' -f $script:PendingModel,$script:PendingContext,$script:NpmCacheDir,$npx,$out,$err
     }
-    if($script:PendingModel -eq 'qwen3.8-27b-minq4' -and $script:NInferHarnessPatch){
-        $cmd=$cmd.Replace('dsh web --no-open',('dsh web --patch "'+$script:NInferHarnessPatch+'" --no-open'))
-        $cmd=$cmd.Replace('@deepseek-ai/dsh@latest web --no-open',('@deepseek-ai/dsh@latest web --patch "'+$script:NInferHarnessPatch+'" --no-open'))
-    }
+    $mcpPatch=Join-Path $script:AppDataDir 'agentport-mcp.patch.json'
+    if($script:PendingModel -eq 'qwen3.8-27b-minq4'){Write-AgentPortMcpOverlay $mcpPatch -NInfer | Out-Null}else{Write-AgentPortMcpOverlay $mcpPatch | Out-Null}
+    $patchArgs='--patch "'+$mcpPatch+'"'
+    if($script:PendingModel -eq 'qwen3.8-27b-minq4' -and $script:NInferHarnessPatch){$patchArgs+=' --patch "'+$script:NInferHarnessPatch+'"'}
+    $cmd=$cmd.Replace('dsh web --no-open',('dsh web '+$patchArgs+' --no-open'))
+    $cmd=$cmd.Replace('@deepseek-ai/dsh@latest web --no-open',('@deepseek-ai/dsh@latest web '+$patchArgs+' --no-open'))
     $script:HarnessProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
 }
 
@@ -2693,6 +2704,15 @@ function Show-ProfilesMenu {
                   </Grid>
                 </Border>
 
+                <Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="20,14" Margin="0,0,0,10">
+                  <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="NInfer RTX 4080" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Fast: 24k context, MTP3, about 77 tok/s. Max: 49k context with less spare VRAM." Foreground="#9BC9A8" FontSize="11" Margin="0,4,10,0" TextWrapping="Wrap"/></StackPanel>
+                    <Button x:Name="UseNInferButton" Grid.Column="1" Content="Use NInfer (Fast)" Style="{StaticResource PrimaryButtonStyle}" Padding="16,9" Margin="6,0"/>
+                    <Button x:Name="UseNInferLongButton" Grid.Column="2" Content="Use NInfer (49k)" Style="{StaticResource ModernButton}" Padding="14,9" Margin="6,0"/>
+                    <Button x:Name="InstallNInferButton" Grid.Column="3" Content="Install / Repair" Style="{StaticResource ModernButton}" Padding="14,9" Margin="6,0,0,0"/>
+                  </Grid>
+                </Border>
+
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="28,15" Margin="0,0,0,10">
                   <StackPanel>
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="30"/><ColumnDefinition/><ColumnDefinition Width="30"/><ColumnDefinition/></Grid.ColumnDefinitions>
@@ -2745,7 +2765,7 @@ function Show-ProfilesMenu {
                   <Button x:Name="QuickImportButton" Grid.Column="2" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="Import GGUF" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="From file or folder" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
                   <Button x:Name="QuickModelsFolderButton" Grid.Column="4" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="Open Model Folder" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="View in Explorer" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
                   <Button x:Name="QuickConfigFolderButton" Grid.Column="6" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="Open Config Folder" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="View settings" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
-                  <Button x:Name="QuickLogsButton" Grid.Column="8" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="View Logs" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="Runtime logs" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
+                  <Button x:Name="QuickLogsButton" Grid.Column="8" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="MCP Connections" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="Add agent tools" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
                 </Grid>
               </StackPanel>
             </ScrollViewer>
@@ -2806,6 +2826,7 @@ try {
 
 $names = @('TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','VramBar','RamBar','VramText','RamText','MemorySummary','HomeVramBar','HomeRamBar','HomeVramText','HomeRamText','HomeFitStatus','HomeMemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','RuntimeOffloadButton','StopButton','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','OpenModelsButton','OpenConfigButton','KillButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','SidebarOffloadButton','QuickHfButton','QuickImportButton','QuickModelsFolderButton','QuickConfigFolderButton','QuickLogsButton','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
+foreach($n in @('UseNInferButton','UseNInferLongButton','InstallNInferButton')){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 
 # Use the approved AgentPort lockup itself in the sidebar rather than re-typesetting it.
 try {
@@ -2861,7 +2882,7 @@ $NavRuntimes.Add_Click({ Switch-Page 'Runtimes' })
 $NavSkills.Add_Click({ Switch-Page 'Skills' })
 $NavSettings.Add_Click({ Switch-Page 'Settings' })
 
-$ModelCombo.Add_SelectionChanged({ Update-MemoryFit })
+$ModelCombo.Add_SelectionChanged({ Update-MemoryFit; Update-BackendSelectionUi })
 $ContextCombo.Add_SelectionChanged({ Update-MemoryFit })
 $CacheCombo.Add_SelectionChanged({ Update-MemoryFit })
 $OffloadCombo.Add_SelectionChanged({ if($OffloadCombo.SelectedItem){ $StatusText.Text=$script:OffloadModes[[string]$OffloadCombo.SelectedItem].note } })
@@ -2872,12 +2893,18 @@ $SidebarOffloadButton.Add_Click({ Offload-Model })
 $RuntimeOffloadButton.Add_Click({ Offload-Model })
 $RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
 $StopButton.Add_Click({ Kill-Stack; $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; Set-Log 'Stack stopped.' })
+$UseNInferButton.Add_Click({ Select-AndStartNInfer 24576 })
+$UseNInferLongButton.Add_Click({
+    $answer=[Windows.MessageBox]::Show('49k context was verified on this RTX 4080 with about 114 MiB spare GPU memory. Close other GPU applications first. Use maximum context?','NInfer maximum context',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Warning)
+    if($answer -eq [Windows.MessageBoxResult]::Yes){Select-AndStartNInfer 49152}
+})
+$InstallNInferButton.Add_Click({try {Install-AgentPortNInfer}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
 
 $QuickHfButton.Add_Click({ Switch-Page 'Models'; $RepoInput.Focus() | Out-Null })
 $QuickImportButton.Add_Click({ Import-LocalGguf })
 $QuickModelsFolderButton.Add_Click({ $p=[string]$script:Config.models_root; if(-not(Test-Path $p)){New-Item -ItemType Directory -Force -Path $p|Out-Null}; Start-Process explorer.exe $p })
 $QuickConfigFolderButton.Add_Click({ Ensure-ConfigDir; Start-Process explorer.exe $script:ConfigDir })
-$QuickLogsButton.Add_Click({ Switch-Page 'Runtimes' })
+$QuickLogsButton.Add_Click({ Show-AgentPortMcpManager })
 
 $InspectButton.Add_Click({ Inspect-HfRepo })
 $DownloadButton.Add_Click({ Start-HfDownload })
@@ -2894,7 +2921,7 @@ $HarnessPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.harness_
 $OpenSkillsButton.Add_Click({ $p=[string]$script:Config.harness_skills_root; if(-not(Test-Path $p)){New-Item -ItemType Directory -Force -Path $p|Out-Null}; Start-Process explorer.exe $p })
 $OpenModelsButton.Add_Click({ $p=[string]$script:Config.models_root; if(-not(Test-Path $p)){New-Item -ItemType Directory -Force -Path $p|Out-Null}; Start-Process explorer.exe $p })
 $OpenConfigButton.Add_Click({ Ensure-ConfigDir; Start-Process explorer.exe $script:ConfigDir })
-$KillButton.Add_Click({ Kill-Stack; Set-Log 'All local TextGen / Harness processes terminated.' 'ok' })
+$KillButton.Add_Click({ Kill-Stack; Set-Log 'AgentPort TextGen, NInfer and Harness processes stopped.' 'ok' })
 $UninstallTextGenButton.Add_Click({
     $root=[string]$script:Config.textgen_root; $ans=[System.Windows.MessageBox]::Show("Remove TextGen application files from:`n`n$root`n`nThe user_data folder is preserved.",'Uninstall TextGen',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
     if($ans -eq [System.Windows.MessageBoxResult]::Yes){ Kill-Stack; Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Where-Object {$_.Name -ne 'user_data'} | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; Set-Log 'TextGen application files removed.' 'ok' }
@@ -2917,15 +2944,30 @@ $timer.Start()
 Write-Host 'AgentPort: scanning models'
 Ensure-AgentPortRuntimeDirs
 Refresh-Models
+Refresh-NInferControls
+Update-BackendSelectionUi
 Refresh-Runtime
 Set-Log 'AgentPort ready. One profile controls TextGen and the Harness together.' 'ok'
-$Window.Add_Closed({if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}})
+$Window.Add_Closed({Kill-Stack})
 Write-Host 'AgentPort: showing window'
 if($SmokeTest){
     $Window.Add_ContentRendered({
-        Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count)
+        Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count+'; NInfer button='+$UseNInferButton.Content)
         $timer.Stop()
         $Window.Close()
+    })
+}
+if($IntegrationTest){
+    $Window.Add_ContentRendered({
+        try {Select-AndStartNInfer 24576}catch{Write-Host ('Integration start failed: '+$_.Exception.Message);$Window.Close();return}
+        $script:IntegrationDeadline=(Get-Date).AddSeconds(120)
+        $script:IntegrationCheck=[Windows.Threading.DispatcherTimer]::new()
+        $script:IntegrationCheck.Interval=[TimeSpan]::FromSeconds(2)
+        $script:IntegrationCheck.Add_Tick({
+            if((Test-Port 5100) -and (Test-Port 3080)){Write-Host 'AgentPort integration ready: NInfer + Harness';$script:IntegrationCheck.Stop();$Window.Close()}
+            elseif((Get-Date) -gt $script:IntegrationDeadline){Write-Host 'AgentPort integration timed out';$script:IntegrationCheck.Stop();$Window.Close()}
+        })
+        $script:IntegrationCheck.Start()
     })
 }
 [void]$Window.ShowDialog()

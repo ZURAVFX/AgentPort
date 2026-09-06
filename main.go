@@ -13,7 +13,7 @@ import (
 var files embed.FS
 
 func main() {
-    root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v1.7.3-4080")
+    root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v1.7.4-4080")
     err := fs.WalkDir(files, ".", func(path string, entry fs.DirEntry, walkErr error) error {
         if walkErr != nil { return walkErr }
         target := filepath.Join(root, filepath.FromSlash(path))
@@ -28,6 +28,7 @@ func main() {
     defer log.Close()
     args := []string{"-NoLogo", "-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File", filepath.Join(root, "AgentPort-runtime-v1.7.0-4080.ps1")}
     if len(os.Args) > 1 && os.Args[1] == "--smoke-test" { args = append(args, "-SmokeTest") }
+    if len(os.Args) > 1 && os.Args[1] == "--integration-test" { args = append(args, "-IntegrationTest") }
     command := exec.Command("powershell.exe", args...)
     command.SysProcAttr = &syscall.SysProcAttr{HideWindow:true}
     command.Stdout = log
