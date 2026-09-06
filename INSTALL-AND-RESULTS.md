@@ -4,7 +4,7 @@
 2. Open `AgentPort-v1.7.9-4080.exe`.
 3. Choose **Qwen3.8 27B min-Q4 | NInfer RTX 4080**, choose 24k for maximum speed or 49k for maximum context, then press **Start NInfer and open Harness**. AgentPort stops TextGen, loads the matching model, makes NInfer the Harness default and opens Harness automatically.
 4. If NInfer is not installed, the same start button offers the one-time setup. Setup and repair are also available under **Models**.
-5. Open **Skills & MCPs** to add Harness skills, choose a folder connection or import standard `mcpServers` JSON. MCP tools stay off for NInfer unless explicitly enabled, preserving maximum speed and context.
+5. Open **Skills & MCPs** to add Harness skills, choose a folder connection or import standard `mcpServers` JSON. NInfer automatically keeps oversized MCP tool lists out of its 24k fast profile, preserving a usable context; TextGen can use the full tool set.
 6. In **Skills & MCPs**, choose **Install & make default** under **Zura Low Thinking**. This copies the preset to `%USERPROFILE%\.dsh\.agent-presets\zura-low-thinking\agent.cordis.yml`, backs up any existing copy, sets it as the Harness default and keeps Ralph to eight rounds. Restart Harness when prompted; existing chats keep their current preset.
 7. If Harness behaves oddly or **New chat** does not respond, click **Update Harness** on Home. AgentPort checks and caches the latest published Harness package, switches away from an older local checkout without deleting it, and restarts Harness while keeping the selected model running.
 
