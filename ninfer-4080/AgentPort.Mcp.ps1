@@ -39,7 +39,7 @@ function Write-AgentPortMcpOverlay {
     $entries=@()
     if(-not $NInfer -or $settings.useWithNInfer){
         foreach($server in @($settings.servers)){
-            if($server.enabled){$entries+=@{id=('agentport-mcp-'+$server.name);name='@deepseek-ai/dsh-mcp-client';config=$server.config}}
+            if($server.enabled){$entryConfig=[ordered]@{};foreach($key in $server.config.PSObject.Properties.Name){$entryConfig[$key]=$server.config.$key};$entryConfig.failOnStartupError=$false;$entries+=@{id=('agentport-mcp-'+$server.name);name='@deepseek-ai/dsh-mcp-client';config=$entryConfig}}
         }
     }
     $json=if($entries.Count){ConvertTo-Json -InputObject @(@{insert=$entries}) -Depth 15}else{'[]'}
@@ -76,13 +76,15 @@ function Show-AgentPortMcpManager {
     & $refresh
     $dialog.FindName('Comfy').Add_Click({
         $existing=@($settings.servers | Where-Object {$_.name -eq 'comfy-mcp'})
-        if(-not $existing){$config=[ordered]@{serverName='comfy-mcp';transport='stdio';command='comfy-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$true};$settings.servers=@($settings.servers)+[pscustomobject]@{name='comfy-mcp';enabled=$true;config=$config}}
-        & $refresh;$status.Text='ComfyUI added. Install comfy-cli and comfy-mcp, set your ComfyUI workspace as default, then leave ComfyUI running.'
+        $ready=$null -ne (Get-Command 'comfy-mcp' -ErrorAction SilentlyContinue)
+        if(-not $existing){$config=[ordered]@{serverName='comfy-mcp';transport='stdio';command='comfy-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$false};$settings.servers=@($settings.servers)+[pscustomobject]@{name='comfy-mcp';enabled=$ready;config=$config}}
+        & $refresh;$status.Text=if($ready){'ComfyUI added and enabled. Leave ComfyUI running.'}else{'ComfyUI added but left disabled. Install comfy-cli and comfy-mcp, set your workspace as default, then tick it here.'}
     })
     $dialog.FindName('Blender').Add_Click({
         $existing=@($settings.servers | Where-Object {$_.name -eq 'blender-mcp'})
-        if(-not $existing){$config=[ordered]@{serverName='blender-mcp';transport='stdio';command='blender-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$true};$settings.servers=@($settings.servers)+[pscustomobject]@{name='blender-mcp';enabled=$true;config=$config}}
-        & $refresh;$status.Text='Blender added. Install Blender 5.1+, install the official Blender Lab MCP add-on, start its MCP server, and install the blender-mcp command.'
+        $ready=$null -ne (Get-Command 'blender-mcp' -ErrorAction SilentlyContinue)
+        if(-not $existing){$config=[ordered]@{serverName='blender-mcp';transport='stdio';command='blender-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$false};$settings.servers=@($settings.servers)+[pscustomobject]@{name='blender-mcp';enabled=$ready;config=$config}}
+        & $refresh;$status.Text=if($ready){'Blender added and enabled. Keep the Blender MCP server running.'}else{'Blender added but left disabled. Install Blender 5.1+, the official Lab add-on and blender-mcp, then tick it here.'}
     })
     $dialog.FindName('Template').Add_Click({
         $folder=[Windows.Forms.FolderBrowserDialog]::new()

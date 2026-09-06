@@ -15,7 +15,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.7.8-4080'
+$script:AppVersion = '1.7.9-4080'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -2469,6 +2469,22 @@ function Poll-Launch {
             }
         }
     } elseif($script:LaunchState -eq 'wait_harness'){
+        if($script:HarnessProcess){
+            try {
+                $script:HarnessProcess.Refresh()
+                if($script:HarnessProcess.HasExited -and -not (Test-Port 3080)){
+                    $root=[string]$script:Config.textgen_root
+                    $detail=Get-RecentLogText (Join-Path $root 'logs\harness.err.log') 12
+                    if(-not $detail){$detail='Harness stopped before opening port 3080.'}
+                    $script:LaunchState='idle';$PrimaryButton.IsEnabled=$true;$PrimaryButton.Content='Start selected model'
+                    $friendly=if($detail -match 'mcp-client|MCP|tool synchronization'){'Harness stopped while connecting an MCP. Open Skills & MCPs, disable any tool that is not installed or running, then restart Harness.'}else{'Harness stopped during startup. Open Runtimes for the Harness log, then try again.'}
+                    Set-LaunchPhase 6 'Harness stopped during startup' $friendly $LaunchProgress.Value 'error'
+                    Set-Log $detail 'error'
+                    [System.Windows.MessageBox]::Show($friendly,'Harness could not start')|Out-Null
+                    return
+                }
+            } catch {}
+        }
         if((Get-Date) -gt $script:LaunchDeadline){
             $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
             $root=[string]$script:Config.textgen_root
@@ -2705,7 +2721,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-              <Grid Margin="0,0,0,8"><TextBlock Text="v1.7.8-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+              <Grid Margin="0,0,0,8"><TextBlock Text="v1.7.9-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>

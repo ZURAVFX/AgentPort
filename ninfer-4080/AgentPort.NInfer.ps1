@@ -234,7 +234,13 @@ function Start-AgentPortNInfer {
         $script:LaunchState='idle'
         $PrimaryButton.IsEnabled=$true
         $friendlyError=if($rawError -match 'runtime reservation|capacity|out of memory|CUDA.*memory'){
-            'NInfer could not reserve enough GPU memory. Close other GPU apps, then try again with 24k context.'
+            $freeMatch=[regex]::Match($rawError,'(?<free>\d+)\s*MiB is free')
+            if($freeMatch.Success){
+                $freeMiB=[int]$freeMatch.Groups['free'].Value
+                "NInfer needs about 14.6 GiB of free GPU memory, but only $([math]::Round($freeMiB/1024,1)) GiB is free. Stop TextGen, Harness, ComfyUI, Blender, or another GPU app, then retry the 24k profile."
+            } else {
+                'NInfer could not reserve enough GPU memory for this profile. Stop TextGen, Harness, ComfyUI, Blender, or another GPU app, then retry the 24k profile.'
+            }
         } elseif($rawError -match 'test -x|test -s|engine or artifact|control command failed'){
             'NInfer setup is incomplete. Open Models and choose Repair NInfer, then try again.'
         } elseif($rawError -match 'Port 5100|already occupied|still running'){
