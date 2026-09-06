@@ -15,7 +15,7 @@ $profiles = @{
     Long     = @{ Context = 98304; Draft = 3 }
 }
 $p = $profiles[$Profile]
-$NInferContext = [Math]::Min($p.Context, 32768)
+$NInferContext = [Math]::Min($p.Context, 24576)
 $homeRaw = & wsl.exe -d $Distro -- sh -lc 'printf "%s" "$HOME"'
 if($LASTEXITCODE -ne 0){ throw "Could not resolve the Linux HOME path in '$Distro'." }
 $LinuxHome = (($homeRaw | ForEach-Object { [string]$_ }) -join "`n").Trim()

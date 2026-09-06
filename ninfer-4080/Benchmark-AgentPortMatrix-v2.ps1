@@ -26,7 +26,9 @@ if($LinuxHome -notmatch '^/[A-Za-z0-9._/-]+$'){
     throw "Linux HOME must be a safe absolute path, but WSL returned: '$LinuxHome'"
 }
 $NInferRoot = "$LinuxHome/.agentport"
-$NInferContext = [Math]::Min($Context, 32768)
+# TextGen's 49k profile can leave a small CUDA allocation behind during backend switching.
+# Reserve a conservative 24k NInfer KV window so MTP3 can start reliably on a 16 GB card.
+$NInferContext = [Math]::Min($Context, 24576)
 
 foreach($p in @($flagsFile,$python,$conda,$server)){
     if(-not (Test-Path -LiteralPath $p)){ throw "Required AgentPort/TextGen file missing: $p" }
