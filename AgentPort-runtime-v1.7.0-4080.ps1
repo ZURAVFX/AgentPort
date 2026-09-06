@@ -1,3 +1,4 @@
+param([switch]$SmokeTest)
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -14,7 +15,9 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.7.0-4080'
+$script:AppVersion = '1.7.3-4080'
+. (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.NInfer.ps1')
 $script:ConfigDir = Join-Path $env:USERPROFILE '.dsh'
 $script:ConfigFile = Join-Path $script:ConfigDir 'launcher_config.json'
 $script:SettingsPath = Join-Path $script:ConfigDir 'settings.yaml'
@@ -1280,6 +1283,7 @@ function Ensure-AppIcon {
         }
     } catch {}
 }
+Write-Host 'AgentPort: preparing icon'
 Ensure-AppIcon
 
 function Test-Port([int]$Port){
@@ -1372,7 +1376,11 @@ function Find-RelatedMmproj([string]$ModelPath){
 }
 
 function Get-InstalledModels {
-    $items = @()
+    $items = @([pscustomobject]@{
+        Display='Qwen3.8 27B min-Q4 | NInfer RTX 4080 | 24k context, MTP3'
+        Name='Qwen3.8 27B min-Q4 (NInfer)'; RelPath='qwen3.8-27b-minq4'
+        FullPath=''; Source='NInfer'; RootPath=''; HelperFiles=@(); SizeBytes=13.47GB; SizeGB=13.47
+    })
     $seen = @{}
     foreach($rootInfo in Get-ModelSearchRoots){
         $root=$rootInfo.Path
@@ -1434,18 +1442,13 @@ function Test-ModelMatch([string]$Expected,[string]$Actual){
 }
 
 function Kill-Stack {
-    $ports = @(3080,5100,5105,7860)
-    foreach($p in $ports){
-        Get-NetTCPConnection -State Listen -LocalPort $p -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-    }
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-        $_.CommandLine -like '*llama-server.exe*' -or $_.CommandLine -like '*installer_files\env\python.exe*server.py*' -or $_.CommandLine -like '*dsh web*'
-    } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
+    Stop-AgentPortProcess $script:TextGenProcess
+    Stop-AgentPortProcess $script:HarnessProcess
 }
 
 function Kill-HarnessOnly {
-    Get-NetTCPConnection -State Listen -LocalPort 3080 -ErrorAction SilentlyContinue | ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*dsh web*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Stop-AgentPortProcess $script:HarnessProcess
 }
 
 function Prepare-IsolatedHarnessSkills {
@@ -1912,15 +1915,6 @@ agent-default-model:
 }
 
 # --- AgentPort RTX 4080/NInfer backend ---------------------------------------
-function Get-AgentPortRuntimeBackend {
-    if($script:Config -and $script:Config.PSObject.Properties.Name -contains 'runtime_backend'){
-        $v=[string]$script:Config.runtime_backend
-        if($v){ return $v }
-    }
-    # Proven/default path: TextGen. NInfer remains explicit/experimental until its
-    # Ada sm_89 16 GB build is validated on a physical RTX 4080.
-    return 'TextGen'
-}
 
 function Get-AgentPortNInferDistro {
     if($script:Config -and $script:Config.PSObject.Properties.Name -contains 'ninfer_wsl_distro'){
@@ -1937,60 +1931,9 @@ function Test-AgentPortRtx4080 {
     }catch{ return $false }
 }
 
-function Test-AgentPortNInferWslReady {
-    param([string]$Distro)
-    try{
-        $home = ((& wsl.exe -d $Distro -- printenv HOME) -join '').Trim()
-        if($home -notmatch '^/[A-Za-z0-9._/-]+$'){ return $false }
-        $root = "$home/.agentport"
-        & wsl.exe -d $Distro -- bash -lc "test -x '$root/ninfer-src/build-sm89/apps/ninfer-serve' -a -s '$root/models/qwen3_8_27b_minq4.ninfer'" 2>$null | Out-Null
-        return ($LASTEXITCODE -eq 0)
-    }catch{ return $false }
-}
 
-function Start-AgentPortNInfer4080IfEligible {
-    param([string]$Model,[int]$Context)
-    $backend = Get-AgentPortRuntimeBackend
-    if($backend -ne 'NInfer4080'){ return $false }
-
-    # NInfer is explicit and uses the converted min-Q4 artifact. GGUF selection remains TextGen.
-    $eligible = ([string]$Model -match '(?i)Qwen3\.8-27B-Ridge-3\.7bpw\.gguf$')
-    if(-not $eligible){
-        Set-Log 'NInfer4080 currently supports Qwen3.8-27B-Ridge-3.7bpw.gguf only; using TextGen for the selected model.' 'warn'
-        return $false
-    }
-
-    if(-not (Test-AgentPortRtx4080)){
-        Set-Log 'NInfer4080 requested but no RTX 4080-class GPU was detected; falling back to TextGen.' 'warn'
-        return $false
-    }
-
-    $distro = Get-AgentPortNInferDistro
-    if(-not (Test-AgentPortNInferWslReady $distro)){
-        Set-Log ('NInfer4080 requested but the WSL engine/model is not installed in '+$distro+'; falling back to TextGen.') 'warn'
-        return $false
-    }
-
-    $ctx = [Math]::Max(8192,[Math]::Min([int]$Context,24576))
-    $home = ((& wsl.exe -d $distro -- printenv HOME) -join '').Trim()
-    if($home -notmatch '^/[A-Za-z0-9._/-]+$'){ Set-Log 'NInfer launch aborted: WSL HOME was not an absolute path.' 'error'; return $false }
-    $root = "$home/.agentport"
-    $modelId = 'qwen3.8-27b-minq4'
-    $cmd = "set -e; test -x '$root/ninfer-src/build-sm89/apps/ninfer-serve'; test -s '$root/models/qwen3_8_27b_minq4.ninfer'; mkdir -p '$root/logs'; if test -e '$root/logs/agentport.pid' && test -e /proc/`$(cat '$root/logs/agentport.pid')/exe; then echo 'NInfer instance already running'; exit 17; fi; nohup '$root/ninfer-src/build-sm89/apps/ninfer-serve' '$root/models/qwen3_8_27b_minq4.ninfer' --host 127.0.0.1 --port 5100 --api-key local-textgen --model-id '$modelId' --max-context $ctx --kv-capacity $ctx --max-concurrency 1 --prefill-chunk 64 --kv-dtype i4 --spec mtp --draft-tokens 3 --lm-head-draft --preserve-thinking > '$root/logs/ninfer-serve.log' 2>&1 < /dev/null & echo `$! > '$root/logs/agentport.pid'"
-    try{
-        & wsl.exe -d $distro -- bash -lc $cmd | Out-Null
-        if($LASTEXITCODE -ne 0){ throw "wsl exit $LASTEXITCODE" }
-        Set-Log ('Starting NInfer RTX 4080 min-Q4 backend: '+$ctx+' ctx, INT4 KV, native MTP3.') 'ok'
-        $script:TextGenProcess = $null
-        return $true
-    }catch{
-        Set-Log ('NInfer4080 launch failed; falling back to TextGen. '+$_.Exception.Message) 'warn'
-        return $false
-    }
-}
 # -----------------------------------------------------------------------------
 function Start-TextGen {
-    if(Start-AgentPortNInfer4080IfEligible -Model ([string]$script:PendingModel) -Context ([int]$script:PendingContext)){ return }
     $root = [string]$script:Config.textgen_root
     if($root -match '\s'){ throw "TextGen cannot run from a path containing spaces: $root" }
     Patch-TextGenLauncher
@@ -2015,7 +1958,7 @@ function Start-Harness {
     Ensure-AgentPortRuntimeDirs
     $root=[string]$script:Config.harness_root
     if(-not (Test-Path -LiteralPath $root)){ New-Item -ItemType Directory -Force -Path $root | Out-Null }
-    Prepare-IsolatedHarnessSkills
+    if($script:PendingModel -ne 'qwen3.8-27b-minq4'){Prepare-IsolatedHarnessSkills}
     $logs = Join-Path ([string]$script:Config.textgen_root) 'logs'
     if(-not (Test-Path $logs)){ New-Item -ItemType Directory -Force -Path $logs | Out-Null }
     $out = Join-Path $logs 'harness.out.log'
@@ -2026,7 +1969,11 @@ function Start-Harness {
         $npx=Ensure-PortableNode
         $cmd = 'set "TEXTGEN_API_KEY=local-textgen"&& set "UNSLOTH_STUDIO_API_KEY=local-textgen"&& set "FREETOKEN_API_KEY=local-textgen"&& set "DSH_STUDIO_MODEL={0}"&& set "DSH_STUDIO_CONTEXT={1}"&& set "npm_config_cache={2}"&& "{3}" --yes @deepseek-ai/dsh@latest web --no-open > "{4}" 2> "{5}"' -f $script:PendingModel,$script:PendingContext,$script:NpmCacheDir,$npx,$out,$err
     }
-    Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden | Out-Null
+    if($script:PendingModel -eq 'qwen3.8-27b-minq4' -and $script:NInferHarnessPatch){
+        $cmd=$cmd.Replace('dsh web --no-open',('dsh web --patch "'+$script:NInferHarnessPatch+'" --no-open'))
+        $cmd=$cmd.Replace('@deepseek-ai/dsh@latest web --no-open',('@deepseek-ai/dsh@latest web --patch "'+$script:NInferHarnessPatch+'" --no-open'))
+    }
+    $script:HarnessProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
 }
 
 function Set-Log([string]$Text,[string]$Kind='normal'){
@@ -2322,6 +2269,7 @@ function Import-LocalGguf {
 
 function Start-UnifiedStack {
     $m=Get-SelectedModel
+    if($m -and $m.Source -eq 'NInfer'){Start-AgentPortNInfer; return}
     if($null -eq $m){ [System.Windows.MessageBox]::Show('Install or select a GGUF model first.','No model selected')|Out-Null; return }
     $ctxLabel=[string]$ContextCombo.SelectedItem; if(-not $ctxLabel){$ctxLabel='48k (49,152 tokens)'}
     $ctx=[int]$script:ContextPresets[$ctxLabel]
@@ -2519,6 +2467,7 @@ function Poll-Launch {
 }
 
 function Offload-Model {
+    if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null; Set-Log 'NInfer stopped and GPU memory released.' 'ok'; return}
     if(-not (Test-Port 5100)){ Set-Log 'TextGen is offline. Nothing to offload.'; return }
     try{ Invoke-TextGenApi '/v1/internal/model/unload' 'POST' @{} 20 | Out-Null; $script:Config.active_model=''; Save-Config; Set-Log 'Model offloaded. TextGen stays online.' 'ok' }catch{ Set-Log ('Unload API failed: '+$_.Exception.Message) 'error' }
 }
@@ -2549,7 +2498,7 @@ function Refresh-Runtime {
                     $RuntimeContext.Text='Context unknown'
                     $RuntimeOffload.Text='Loaded externally'
                 }
-                $RuntimeApi.Text='TextGen API :5100'
+                $RuntimeApi.Text=if($loaded -eq 'qwen3.8-27b-minq4'){'NInfer API :5100 | MTP3'}else{'TextGen API :5100'}
                 $RuntimeState.Text='Ready'; $RuntimeState.Foreground='#51E57A'; $RuntimeStateDot.Fill='#51E57A'
                 if($script:LaunchState -eq 'idle'){$PrimaryButton.Content='Apply / Switch'}
             } else {
@@ -2829,6 +2778,7 @@ function Show-ProfilesMenu {
 '@
 
 $reader = New-Object System.Xml.XmlNodeReader $xaml
+Write-Host 'AgentPort: loading window'
 $Window = [System.Windows.Markup.XamlReader]::Load($reader)
 try {
     $wa = [System.Windows.SystemParameters]::WorkArea
@@ -2890,6 +2840,7 @@ function Refresh-PathLabels {
     $HarnessPathText.Text=[string]$script:Config.harness_root
     $SkillsPathText.Text=[string]$script:Config.harness_skills_root
 }
+Write-Host 'AgentPort: refreshing configuration'
 Refresh-PathLabels
 Refresh-InstallStatus
 Refresh-SkillsPanel
@@ -2963,8 +2914,18 @@ $timer.Interval = [TimeSpan]::FromSeconds(2)
 $timer.Add_Tick({ Poll-Launch; Poll-Download; Refresh-Runtime })
 $timer.Start()
 
+Write-Host 'AgentPort: scanning models'
 Ensure-AgentPortRuntimeDirs
 Refresh-Models
 Refresh-Runtime
 Set-Log 'AgentPort ready. One profile controls TextGen and the Harness together.' 'ok'
+$Window.Add_Closed({if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}})
+Write-Host 'AgentPort: showing window'
+if($SmokeTest){
+    $Window.Add_ContentRendered({
+        Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count)
+        $timer.Stop()
+        $Window.Close()
+    })
+}
 [void]$Window.ShowDialog()

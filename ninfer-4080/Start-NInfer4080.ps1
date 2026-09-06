@@ -1,88 +1,11 @@
 [CmdletBinding()]
-param(
-    [string]$Distro = 'Ubuntu-24.04',
-    [ValidateSet('Safe','Balanced','Long')]
-    [string]$Profile = 'Balanced',
-    [string]$ModelId = 'Qwen3.8-27B-Ridge-3.7bpw.gguf',
-    [int]$Port = 5100,
-    [string]$ApiKey = 'local-textgen'
-)
-
-$ErrorActionPreference = 'Stop'
-$profiles = @{
-    Safe     = @{ Context = 32768; Draft = 3 }
-    Balanced = @{ Context = 49152; Draft = 3 }
-    Long     = @{ Context = 98304; Draft = 3 }
-}
-$p = $profiles[$Profile]
-$NInferContext = [Math]::Min($p.Context, 24576)
-$homeRaw = & wsl.exe -d $Distro -- sh -lc 'printf "%s" "$HOME"'
-if($LASTEXITCODE -ne 0){ throw "Could not resolve the Linux HOME path in '$Distro'." }
-$LinuxHome = (($homeRaw | ForEach-Object { [string]$_ }) -join "`n").Trim()
-if($LinuxHome -notmatch '^/[A-Za-z0-9._/-]+$'){
-    throw "Linux HOME must be a safe absolute path, but WSL returned: '$LinuxHome'"
-}
-$Root = "$LinuxHome/.agentport"
-$Server = "$Root/ninfer-src/build-sm89/apps/ninfer-serve"
-$Model = "$Root/models/qwen3_8_27b_minq4.ninfer"
-$Log = "$Root/logs/ninfer-serve.log"
-
-function Invoke-WslBash([string]$Command) {
-    & wsl.exe -d $Distro -- bash -lc $Command
-    if ($LASTEXITCODE -ne 0) { throw "WSL command failed with exit code $LASTEXITCODE.`n$Command" }
-}
-
-Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue |
-    ForEach-Object { Stop-Process -Id $_.OwningProcess -Force -ErrorAction SilentlyContinue }
-
-& wsl.exe -d $Distro -- bash -lc "pkill -f 'ninfer-serve.*--port $Port' >/dev/null 2>&1 || true" | Out-Null
-Invoke-WslBash "test -x '$Server'"
-Invoke-WslBash "test -s '$Model'"
-
-# The model id and API key are only used as single shell arguments; remove apostrophes to keep
-# the WSL launch command unambiguous rather than trying to emulate Bash quoting in PowerShell.
-$escapedModelId = $ModelId.Replace("'", '')
-$escapedKey = $ApiKey.Replace("'", '')
-$cmd = @"
-set -euo pipefail
-mkdir -p '$Root/logs'
-setsid -f '$Server' '$Model' \
-  --host 0.0.0.0 \
-  --port $Port \
-  --api-key '$escapedKey' \
-  --model-id '$escapedModelId' \
-  --max-context $NInferContext \
-  --kv-capacity $NInferContext \
-  --max-concurrency 1 \
-  --prefill-chunk 64 \
-  --kv-dtype i4 \
-  --spec mtp \
-  --draft-tokens $($p.Draft) \
-  --lm-head-draft \
-  --preserve-thinking \
-  > '$Log' 2>&1
-echo detached
-"@
-
-$pidText = (& wsl.exe -d $Distro -- bash -lc $cmd | Select-Object -Last 1).Trim()
-if ($LASTEXITCODE -ne 0) { throw 'Failed to launch NInfer inside WSL.' }
-Write-Host "NInfer WSL PID: $pidText"
-Write-Host "Profile: $Profile (TextGen $($p.Context) context; NInfer $NInferContext context, MTP$($p.Draft), INT4 KV)"
-
-$headers = @{ Authorization = "Bearer $ApiKey" }
-$ready = $false
-for ($i = 0; $i -lt 120; $i++) {
-    try {
-        $models = Invoke-RestMethod -Uri "http://127.0.0.1:$Port/v1/models" -Headers $headers -TimeoutSec 2
-        if ($models) { $ready = $true; break }
-    } catch {}
-    Start-Sleep -Seconds 1
-}
-
-if (-not $ready) {
-    $tail = & wsl.exe -d $Distro -- bash -lc "tail -n 80 '$Log' 2>/dev/null || true"
-    throw "NInfer did not become reachable on Windows localhost:$Port.`nWSL log:`n$($tail -join "`n")"
-}
-
-Write-Host "NInfer is ready at http://127.0.0.1:$Port/v1" -ForegroundColor Green
-Write-Host 'DeepSeek Harness can use the same AgentPort provider/API key as TextGen.'
+param([string]$Distro='Ubuntu-24.04',[ValidateSet('Safe','Balanced','Long')][string]$Profile='Balanced',[int]$Port=5100)
+$ErrorActionPreference='Stop'
+. (Join-Path $PSScriptRoot 'NInfer.Runtime.ps1')
+$contexts=@{Safe=8192;Balanced=24576;Long=32768}
+$service=$null
+try {
+    $service=Start-NInferService -Distro $Distro -Context $contexts[$Profile] -Port $Port
+    Write-Host 'NInfer is running. Keep this window open; Ctrl+C stops this instance.'
+    Wait-Process -Id $service.Process.Id
+} finally {if($service){Stop-NInferService $service}}

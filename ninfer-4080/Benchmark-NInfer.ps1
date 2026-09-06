@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param([int]$Context=24576,[int]$MaxTokens=256,[string]$Distro='Ubuntu-24.04',
-      [int[]]$Drafts=@(3),[int]$Port=5101,[string]$OutputDirectory=(Join-Path $PSScriptRoot 'results'))
+      [int[]]$Drafts=@(3),[int]$Port=5101,[string]$OutputDirectory='')
 $ErrorActionPreference='Stop'
+if(-not $OutputDirectory){$OutputDirectory=Join-Path $PSScriptRoot 'results'}
 . (Join-Path $PSScriptRoot 'NInfer.Runtime.ps1')
 New-Item -ItemType Directory -Force -Path $OutputDirectory | Out-Null
 $prompts=@(

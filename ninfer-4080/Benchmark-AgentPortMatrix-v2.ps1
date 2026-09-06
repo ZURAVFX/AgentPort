@@ -8,6 +8,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+if(-not $IncludeTextGen -and -not $SkipNInfer){
+    & (Join-Path $PSScriptRoot 'Benchmark-NInfer.ps1') -Context ([Math]::Min($Context,24576)) -MaxTokens $MaxTokens -Distro $Distro
+    return
+}
 $ConfigFile = Join-Path $env:USERPROFILE '.dsh\launcher_config.json'
 if(-not (Test-Path -LiteralPath $ConfigFile)){ throw "AgentPort config not found: $ConfigFile" }
 $config = Get-Content -LiteralPath $ConfigFile -Raw | ConvertFrom-Json

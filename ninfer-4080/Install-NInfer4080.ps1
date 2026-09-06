@@ -124,7 +124,15 @@ try {
         $vram = [int]$Matches[1]
         if ($vram -lt 15000) { throw "Only $vram MiB VRAM detected. This profile expects a 16 GB-class GPU." }
     }
-    if ($gpu -match ',\s*([0-9]+\.[0-9]+)\s*$' -and $Matches[1] -ne '8.9') { Write-Warning "Compute capability $($Matches[1]) detected. This build explicitly targets sm_89." }
+    if ($gpu -notmatch ',\s*8\.9\s*$') { throw 'This installer requires an Ada compute capability 8.9 GPU.' }
+
+    $reuse = $false
+    try {
+        Invoke-WslBash "test -x '$Build/apps/ninfer-serve' && test `"`$(git -C '$Source' rev-parse HEAD)`" = '$BaseCommit' && grep -qx '$AdaPortCommit' '$Source/.agentport-sm89-port'"
+        $reuse = $true
+    } catch { Write-Host 'A matching installed build was not found; preparing the pinned build.' }
+    if($reuse){Write-Host 'Reusing the installed pinned sm_89 build.' -ForegroundColor Green}
+    if(-not $reuse){
 
     Set-Stage '3/10 Validate WSL administrator access'
     & wsl.exe -d $Distro -u root -- true
@@ -183,8 +191,10 @@ if [ -d '$Source/.git' ]; then
 else
   git clone '$Repo' '$Source'
 fi
-git -C '$Source' reset --hard
-git -C '$Source' clean -fdx
+if test -n "`$(git -C '$Source' status --porcelain --untracked-files=no)"; then
+  echo 'Existing NInfer source has changes. Preserve it and choose a clean installation directory before rebuilding.' >&2
+  exit 2
+fi
 git -C '$Source' fetch origin '$BaseCommit' --depth 1 || true
 git -C '$Source' checkout --detach '$BaseCommit'
 "@
@@ -222,7 +232,6 @@ printf '%s\n' '$AdaPortCommit' > '$Source/.agentport-sm89-port'
     Set-Stage '8/10 Build NInfer for Ada sm_89'
     Invoke-WslBash @"
 set -euo pipefail
-rm -rf '$Build'
 cmake -S '$Source' -B '$Build' -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_CUDA_COMPILER=$Nvcc \
@@ -234,6 +243,7 @@ cmake -S '$Source' -B '$Build' -G Ninja \
   -DNINFER_BUILD_BENCHMARKS=OFF
 cmake --build '$Build' --parallel `$(nproc) --target ninfer ninfer-serve
 "@
+    }
 
     Set-Stage '9/10 Validate NInfer server binary'
     Invoke-WslBash "test -x '$Build/apps/ninfer-serve' && '$Build/apps/ninfer-serve' --help >/dev/null"
@@ -243,6 +253,10 @@ cmake --build '$Build' --parallel `$(nproc) --target ninfer ninfer-serve
         Set-Stage '10/10 Download Qwen3.8 min-Q4 NInfer artifact'
         Invoke-WslBash @"
 set -euo pipefail
+if test -s '$Models/$ModelFile'; then
+  echo 'Existing model artifact retained; startup validation will check that it loads.'
+  exit 0
+fi
 python3 -m venv '$Root/hf-venv'
 '$Root/hf-venv/bin/pip' install -q -U huggingface_hub
 '$Root/hf-venv/bin/hf' download '$ModelRepo' '$ModelFile' --local-dir '$Models'
