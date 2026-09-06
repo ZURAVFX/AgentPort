@@ -35,18 +35,39 @@ function Stop-StaleNInferInstances {
     $distro=Get-AgentPortNInferDistro
     $linuxHome=((& wsl.exe -d $distro --exec printenv HOME) -join '').Trim()
     if($linuxHome -notmatch '^/[A-Za-z0-9._/-]+$'){return}
-    $exe="$linuxHome/.agentport/ninfer-src/build-sm89/apps/ninfer-serve"
+    # AgentPort has used more than one build directory over its iterations. Match
+    # only ninfer-serve binaries inside AgentPort's own source tree so cleanup
+    # cannot terminate an unrelated system or user-managed NInfer process.
+    $root="$linuxHome/.agentport"
     $command=@'
 set -eu
-for file in '__ROOT__'/logs/agentport-*.pid '__ROOT__'/logs/agentport.pid; do
+root='__ROOT__'
+is_agentport_ninfer() {
+  exe=$(readlink /proc/$1/exe 2>/dev/null || true)
+  case "$exe" in
+    "$root"/ninfer-src/ninfer-serve|"$root"/ninfer-src/*/ninfer-serve) return 0;;
+    *) return 1;;
+  esac
+}
+stop_if_owned() {
+  target="$1"
+  case "$target" in ''|*[!0-9]*) return;; esac
+  if is_agentport_ninfer "$target"; then kill -TERM "$target" 2>/dev/null || true; fi
+}
+for file in "$root"/logs/agentport-*.pid "$root"/logs/agentport.pid; do
   test -f "$file" || continue
   read -r target < "$file"
-  case "$target" in ''|*[!0-9]*) continue;; esac
-  if test "$(readlink /proc/$target/exe 2>/dev/null || true)" = '__EXE__'; then kill -TERM "$target"; fi
+  stop_if_owned "$target"
   rm -f "$file"
 done
+# Recover older AgentPort launches that predate PID files. The executable path
+# guard above keeps this limited to binaries under ~/.agentport/ninfer-src.
+for proc in /proc/[0-9]*; do
+  target=${proc##*/}
+  if is_agentport_ninfer "$target"; then stop_if_owned "$target"; fi
+done
 '@
-    try {Invoke-NInferShell $distro ($command.Replace('__ROOT__',"$linuxHome/.agentport").Replace('__EXE__',$exe)) $temp | Out-Null}catch{}
+    try {Invoke-NInferShell $distro ($command.Replace('__ROOT__',$root)) $temp | Out-Null}catch{}
 }
 
 function Test-AgentPortNInferInstalled {
