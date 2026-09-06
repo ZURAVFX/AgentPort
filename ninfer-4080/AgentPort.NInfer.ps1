@@ -63,8 +63,16 @@ function Test-AgentPortNInferInstalled {
 
 function Refresh-NInferControls {
     $installed=Test-AgentPortNInferInstalled
-    if($InstallNInferButton){$InstallNInferButton.Content=if($installed){'Repair NInfer'}else{'Install NInfer'}}
-    if($UseNInferButton){$UseNInferButton.ToolTip=if($installed){'Start the verified 24k MTP3 profile'}else{'Runs the guided one-time setup first'}}
+    if($InstallNInferButton){$InstallNInferButton.Content=if($installed){'Repair'}else{'Setup details'}}
+    if($UseNInferButton){
+        $UseNInferButton.Content=if($installed){'Switch to NInfer'}else{'Set up & use NInfer'}
+        $UseNInferButton.ToolTip=if($installed){'Stop the current backend, start NInfer MTP3 and open DeepSeek Harness'}else{'Run the one-time setup, then start NInfer and open DeepSeek Harness'}
+    }
+    if($ModelsNInferStatus){
+        $ModelsNInferStatus.Text=if($installed){'Installed and ready'}else{'One-time setup required'}
+        $ModelsNInferStatus.Foreground=if($installed){'#79E99A'}else{'#F1C66D'}
+    }
+    if($ModelsNInferAction){$ModelsNInferAction.Content=if($installed){'Switch to NInfer'}else{'Set up and use NInfer'}}
 }
 
 function Update-BackendSelectionUi {
@@ -72,8 +80,8 @@ function Update-BackendSelectionUi {
     $ninfer=($selected -and $selected.Source -eq 'NInfer')
     foreach($control in @($CacheCombo,$OffloadCombo,$SpecCombo)){if($control){$control.IsEnabled=-not $ninfer}}
     if($ninfer){
-        $PrimaryButton.Content='Start NInfer + Harness'
-        $StatusText.Text='NInfer selected: stock Qwen3.8 27B min-Q4, INT4 KV and MTP3.'
+        $PrimaryButton.Content='Start NInfer and open Harness'
+        $StatusText.Text='NInfer selected. Starting will stop TextGen, load the matching model and open Harness with NInfer active.'
     } else {
         $PrimaryButton.Content='Apply & Start'
         $StatusText.Text='The selected GGUF will use TextGen with DeepSeek Harness.'
@@ -83,9 +91,9 @@ function Update-BackendSelectionUi {
 function Select-AndStartNInfer {
     param([int]$Context=24576)
     if(-not (Test-AgentPortNInferInstalled)){
-        $answer=[Windows.MessageBox]::Show('NInfer needs a one-time setup and model download. Start setup now?','NInfer setup',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
+        $answer=[Windows.MessageBox]::Show("NInfer needs a one-time setup and its compatible model (about 15.8 GB).`n`nAgentPort will install it, switch away from TextGen and open DeepSeek Harness with NInfer selected.`n`nContinue?",'Set up NInfer',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
         if($answer -ne [Windows.MessageBoxResult]::Yes){return}
-        Install-AgentPortNInfer
+        Install-AgentPortNInfer $false
         if(-not (Test-AgentPortNInferInstalled)){return}
     }
     for($index=0;$index -lt $script:Models.Count;$index++){
@@ -96,15 +104,72 @@ function Select-AndStartNInfer {
     Start-UnifiedStack
 }
 
-function Install-AgentPortNInfer {
-    $setup=Join-Path $PSScriptRoot 'ninfer-4080/Bootstrap-NInfer4080.ps1'
-    if(-not (Test-Path $setup)){throw "NInfer setup is missing: $setup"}
+function Get-AgentPortNInferSetupPath {
+    $candidates=New-Object System.Collections.Generic.List[string]
+    if($script:AgentPortRoot){$candidates.Add((Join-Path $script:AgentPortRoot 'ninfer-4080\Bootstrap-NInfer4080.ps1'))}
+    $candidates.Add((Join-Path $PSScriptRoot 'Bootstrap-NInfer4080.ps1'))
+    $candidates.Add((Join-Path (Split-Path $PSScriptRoot -Parent) 'ninfer-4080\Bootstrap-NInfer4080.ps1'))
+    foreach($candidate in @($candidates | Select-Object -Unique)){
+        if(Test-Path -LiteralPath $candidate){return [IO.Path]::GetFullPath($candidate)}
+    }
+    throw "NInfer setup files are missing from this AgentPort installation. Re-download the complete AgentPort package."
+}
+
+function Install-AgentPortNInfer([bool]$ShowCompletion=$true) {
+    $setup=Get-AgentPortNInferSetupPath
     $process=Start-Process powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$setup+'"')) -Wait -PassThru
     if($process.ExitCode -eq 0){
         Refresh-Models
         Refresh-NInferControls
-        [Windows.MessageBox]::Show('NInfer is installed. Choose Use NInfer (Fast) to start it.','NInfer ready') | Out-Null
+        Set-Log 'NInfer setup completed successfully.' 'ok'
+        if($ShowCompletion){[Windows.MessageBox]::Show('NInfer is installed and ready. Choose Switch to NInfer to start it.','NInfer ready') | Out-Null}
     } else {[Windows.MessageBox]::Show('NInfer setup did not finish. The setup window contains the exact reason.','NInfer setup') | Out-Null}
+}
+
+function Update-NInferHarnessSettings {
+    param([int]$Context,[int]$MaxTokens=4096)
+    Ensure-ConfigDir
+    $provider=@"
+    ninfer-local:
+      displayName: NInfer RTX 4080
+      apiKeyEnv: NINFER_API_KEY
+      api: openai-completions
+      baseURL: http://127.0.0.1:5100/v1
+      defaultInput:
+        - text
+      compat:
+        supportsDeveloperRole: false
+        maxTokensField: max_tokens
+      timeoutMs: 3600000
+      streamIdleTimeoutMs: 3600000
+      websocketConnectTimeoutMs: 3600000
+      retryPolicy:
+        mode: normal
+        maxRetries: 0
+      models:
+        - id: 'qwen3.8-27b-minq4'
+          name: 'Qwen3.8 27B min-Q4 (NInfer MTP3)'
+          contextWindow: $Context
+          maxTokens: $MaxTokens
+"@
+    if(Test-Path -LiteralPath $script:SettingsPath){$content=Get-Content -LiteralPath $script:SettingsPath -Raw}else{$content="llm-pi-ai:`n  providers:`n"}
+    $legacyModel="(?m)^        - id:\s*['`"]?qwen3\.8-27b-minq4['`"]?\s*\r?\n(?:^          [^\r\n]*(?:\r?\n|$))*"
+    $content=[regex]::Replace($content,$legacyModel,'')
+    $legacyProviderPattern='(?ms)^    textgen-local:\s*\r?\n.*?(?=^    [A-Za-z0-9][A-Za-z0-9_-]*:\s*$|^[A-Za-z0-9][A-Za-z0-9_-]*:\s*$|\z)'
+    $legacyProvider=[regex]::Match($content,$legacyProviderPattern)
+    if($legacyProvider.Success -and $legacyProvider.Value -match '(?m)^      models:\s*$' -and $legacyProvider.Value -notmatch '(?m)^        - id:'){
+        $content=$content.Remove($legacyProvider.Index,$legacyProvider.Length)
+    }
+    $providerPattern='(?ms)^    ninfer-local:\s*\r?\n.*?(?=^    [A-Za-z0-9][A-Za-z0-9_-]*:\s*$|^[A-Za-z0-9][A-Za-z0-9_-]*:\s*$|\z)'
+    if($content -match $providerPattern){
+        $content=[regex]::Replace($content,$providerPattern,$provider+"`n",1)
+    } elseif($content -match '(?m)^\s{2}providers:\s*$'){
+        $content=[regex]::Replace($content,'(?m)^(\s{2}providers:\s*\r?\n)',('${1}'+$provider+"`n"),1)
+    } else {$content="llm-pi-ai:`n  providers:`n$provider`n"+$content}
+    if($content -match '(?m)^agent-default-model:\s*$'){
+        $content=[regex]::Replace($content,'(agent-default-model:\s*[\r\n]+\s*provider:\s*)[^\r\n]+([\r\n]+\s*model:\s*)[^\r\n]+',('${1}ninfer-local${2}'+"'qwen3.8-27b-minq4'"),1)
+    } else {$content+="`nagent-default-model:`n  provider: ninfer-local`n  model: 'qwen3.8-27b-minq4'`n"}
+    [IO.File]::WriteAllText($script:SettingsPath,$content,([Text.UTF8Encoding]::new($false)))
 }
 
 function New-NInferHarnessPatch {
@@ -140,10 +205,11 @@ function Start-AgentPortNInfer {
         $script:PendingContext=$script:NInferState.Context
         $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply READY.'});max_tokens=16;temperature=0;stream=$false}
         $null=Invoke-TextGenApi '/v1/chat/completions' 'POST' $body 60
-        Update-HarnessSettings $script:PendingModel 'Qwen3.8 27B min-Q4 (NInfer)' $script:PendingContext 4096
+        Update-NInferHarnessSettings $script:PendingContext 4096
         $script:Config.last_model=$script:PendingModel
         $script:Config.active_model=$script:PendingModel
         $script:Config.active_context_tokens=$script:PendingContext
+        $script:Config.active_offload_mode='NInfer MTP3 (full GPU)'
         Save-Config
         Set-Log ("NInfer verified | stock Qwen3.8 27B min-Q4 | $context context | INT4 KV | MTP3") 'ok'
         Set-LaunchPhase 6 'Starting Harness' 'NInfer completion verified. Connecting Harness.' 92
