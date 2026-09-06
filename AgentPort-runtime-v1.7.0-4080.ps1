@@ -11,13 +11,42 @@ public static class AgentPortShellIdentity {
     public static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appID);
     [DllImport("shell32.dll")]
     public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+    [DllImport("shell32.dll")]
+    static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [Out, MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int cx, int cy, uint flags);
+    [DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore {
+        uint GetCount(); void GetAt(uint index, out PropertyKey key); void GetValue(ref PropertyKey key, out PropVariant value);
+        void SetValue(ref PropertyKey key, ref PropVariant value); void Commit();
+    }
+    [StructLayout(LayoutKind.Sequential, Pack=4)] struct PropertyKey { public Guid formatId; public uint propertyId; }
+    [StructLayout(LayoutKind.Explicit)] struct PropVariant {
+        [FieldOffset(0)] public ushort valueType; [FieldOffset(8)] public IntPtr pointer;
+    }
+    static IntPtr smallIcon=IntPtr.Zero, bigIcon=IntPtr.Zero;
+    public static void ApplyWindowIdentity(IntPtr hwnd, string appId, string iconPath) {
+        Guid iid=new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"); IPropertyStore store;
+        int result=SHGetPropertyStoreForWindow(hwnd,ref iid,out store);
+        if(result==0) {
+            PropertyKey key=new PropertyKey{formatId=new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"),propertyId=5};
+            PropVariant value=new PropVariant{valueType=31,pointer=Marshal.StringToCoTaskMemUni(appId)};
+            try { store.SetValue(ref key,ref value); store.Commit(); } finally { Marshal.FreeCoTaskMem(value.pointer); Marshal.ReleaseComObject(store); }
+        } else { Marshal.ThrowExceptionForHR(result); }
+        smallIcon=LoadImage(IntPtr.Zero,iconPath,1,16,16,0x10); bigIcon=LoadImage(IntPtr.Zero,iconPath,1,32,32,0x10);
+        if(smallIcon!=IntPtr.Zero) SendMessage(hwnd,0x80,IntPtr.Zero,smallIcon);
+        if(bigIcon!=IntPtr.Zero) SendMessage(hwnd,0x80,new IntPtr(1),bigIcon);
+        if(smallIcon==IntPtr.Zero || bigIcon==IntPtr.Zero) throw new InvalidOperationException("AgentPort window icons could not be loaded.");
+    }
 }
 "@
 [void][AgentPortShellIdentity]::SetCurrentProcessExplicitAppUserModelID('ZURAVFX.AgentPort')
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.5'
+$script:AppVersion = '2.0.6'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -3114,7 +3143,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.5" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.6" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -3215,6 +3244,12 @@ function Show-ProfilesMenu {
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 Write-Host 'AgentPort: loading window'
 $Window = [System.Windows.Markup.XamlReader]::Load($reader)
+$Window.Add_SourceInitialized({
+    try {
+        $native=New-Object System.Windows.Interop.WindowInteropHelper($Window)
+        [AgentPortShellIdentity]::ApplyWindowIdentity($native.Handle,'ZURAVFX.AgentPort',$script:IconPath)
+    } catch { Write-Host ('AgentPort window identity warning: '+$_.Exception.Message) }
+})
 try {
     $wa = [System.Windows.SystemParameters]::WorkArea
     $Window.MaxHeight = $wa.Height
