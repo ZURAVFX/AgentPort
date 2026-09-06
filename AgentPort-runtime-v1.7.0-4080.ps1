@@ -15,7 +15,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.3'
+$script:AppVersion = '2.0.4'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -3032,7 +3032,7 @@ function Show-ProfilesMenu {
 
     <Style x:Key="ModernButton" TargetType="Button">
       <Setter Property="Foreground" Value="#F3F3F5"/><Setter Property="Background" Value="#0F141A"/><Setter Property="BorderBrush" Value="#282F39"/><Setter Property="BorderThickness" Value="1"/><Setter Property="FontFamily" Value="DM Sans, Segoe UI"/><Setter Property="FontSize" Value="13"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Padding" Value="18,11"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="13" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="#151B23"/><Setter TargetName="B" Property="BorderBrush" Value="#343C48"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.78"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="B" Property="Opacity" Value="0.38"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="13" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="#151B23"/><Setter TargetName="B" Property="BorderBrush" Value="#343C48"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.78"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="B" Property="Opacity" Value="0.38"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
     </Style>
     <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource ModernButton}"><Setter Property="Background" Value="{StaticResource PurpleGradient}"/><Setter Property="BorderBrush" Value="#806EFF"/><Setter Property="Foreground" Value="White"/><Setter Property="FontSize" Value="18"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="Padding" Value="20,15"/></Style>
     <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource ModernButton}"><Setter Property="Foreground" Value="#FF9D9D"/><Setter Property="Background" Value="#1A1014"/><Setter Property="BorderBrush" Value="#3A2028"/></Style>
@@ -3078,11 +3078,11 @@ function Show-ProfilesMenu {
               <Image x:Name="BrandLogo" Width="156" Height="120" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" SnapsToDevicePixels="True"/>
             </Grid>
             <StackPanel Grid.Row="1">
-              <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2302;" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Home" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
-              <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x25C7;" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Models" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2302;" FontSize="20" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Home" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x25C7;" FontSize="19" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Models" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
               <Button x:Name="NavRuntimes" Visibility="Collapsed" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&gt;_" FontFamily="Cascadia Mono, Consolas" FontSize="15" Width="32"/><TextBlock Text="Runtimes" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2261;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Skills &amp; MCPs" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
-              <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2699;" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Settings" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2261;" FontSize="22" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Skills &amp; MCPs" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2699;" FontSize="19" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Settings" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
             </StackPanel>
 
             <StackPanel Grid.Row="3">
@@ -3093,7 +3093,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.3" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.4" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
