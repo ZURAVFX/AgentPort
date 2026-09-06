@@ -77,7 +77,7 @@ function Update-BackendSelectionUi {
     if($AdvancedSettings){$AdvancedSettings.IsEnabled=-not $ninfer}
     if($ninfer){
         $PrimaryButton.Content='Start NInfer and open Harness'
-        $StatusText.Text='NInfer selected. Starting will stop TextGen, load the matching model and open Harness with NInfer active.'
+        $StatusText.Text='NInfer selected. Start will stop AgentPort-owned TextGen, Harness and older NInfer instances before loading the fast profile.'
     } else {
         $PrimaryButton.Content='Start TextGen and open Harness'
         $StatusText.Text='The selected GGUF will use TextGen with DeepSeek Harness.'

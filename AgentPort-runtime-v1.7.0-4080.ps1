@@ -1465,6 +1465,24 @@ function Kill-HarnessOnly {
     $script:HarnessProcess=$null
 }
 
+function Purge-AgentPortVram {
+    try {
+        Kill-Stack
+        $script:LaunchState='idle'
+        $PrimaryButton.IsEnabled=$true
+        $PrimaryButton.Content='Start selected model'
+        Start-Sleep -Milliseconds 700
+        Refresh-Runtime
+        if((Test-Port 5100) -or (Test-Port 3080)){
+            Set-Log 'AgentPort stopped its own processes, but a port is still occupied by an external process. Close that application before retrying.' 'error'
+            return
+        }
+        Set-Log 'AgentPort stack stopped and its GPU allocations were released. You can start NInfer again.' 'ok'
+    } catch {
+        Set-Log ('Could not purge AgentPort GPU allocations: '+$_.Exception.Message) 'error'
+    }
+}
+
 function Prepare-IsolatedHarnessSkills {
     $source = [string]$script:Config.harness_skills_root
     $harness = [string]$script:Config.harness_root
@@ -2167,6 +2185,7 @@ function Choose-Folder([string]$Current){
 }
 
 function Switch-Page([string]$Name){
+    if($Name -eq 'Runtimes'){$Name='Home'}
     foreach($p in @('Home','Models','Runtimes','Skills','Settings')){
         $v = Get-Variable -Name ($p+'Page') -Scope Script -ValueOnly -ErrorAction SilentlyContinue
         if($v){ $v.Visibility='Collapsed' }
@@ -2708,7 +2727,7 @@ function Show-ProfilesMenu {
             <StackPanel Grid.Row="1">
               <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2302;" FontSize="20" Width="32"/><TextBlock Text="Home" VerticalAlignment="Center"/></StackPanel></Button>
               <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x25C7;" FontSize="19" Width="32"/><TextBlock Text="Models" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavRuntimes" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&gt;_" FontFamily="Cascadia Mono, Consolas" FontSize="15" Width="32"/><TextBlock Text="Runtimes" VerticalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="NavRuntimes" Visibility="Collapsed" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&gt;_" FontFamily="Cascadia Mono, Consolas" FontSize="15" Width="32"/><TextBlock Text="Runtimes" VerticalAlignment="Center"/></StackPanel></Button>
               <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2261;" FontSize="22" Width="32"/><TextBlock Text="Skills &amp; MCPs" VerticalAlignment="Center"/></StackPanel></Button>
               <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2699;" FontSize="19" Width="32"/><TextBlock Text="Settings" VerticalAlignment="Center"/></StackPanel></Button>
             </StackPanel>
@@ -2775,6 +2794,15 @@ function Show-ProfilesMenu {
                   </StackPanel>
                 </Border>
 
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14">
+                  <StackPanel>
+                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Runtime health" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="AgentPort-owned services and GPU memory, all in one place." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="RuntimeOffloadButton" Content="Offload model" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopButton" Content="Stop stack" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Purge VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></StackPanel></Grid>
+                    <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Used by the current AgentPort stack" Foreground="#777781" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="System RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating..." Foreground="#85858F" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border></Grid>
+                    <TextBlock Text="Purge VRAM stops only AgentPort-owned TextGen, Harness and NInfer processes, then checks both API ports are free. It does not kill unrelated GPU applications." Foreground="#9999A3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBox x:Name="LogBox" Height="210" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                  </StackPanel>
+                </Border>
+
               </StackPanel>
             </ScrollViewer>
 
@@ -2788,12 +2816,7 @@ function Show-ProfilesMenu {
               </StackPanel>
             </ScrollViewer>
 
-            <ScrollViewer x:Name="RuntimesPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
-              <StackPanel><TextBlock Text="Runtimes" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="See what is running, how memory is being used, and inspect launcher activity." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/>
-                <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22"><StackPanel><TextBlock Text="GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,12"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Estimated model + cache footprint" Foreground="#777781" FontSize="10" Margin="0,8,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22"><StackPanel><TextBlock Text="System RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,12"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating..." Foreground="#85858F" FontSize="10" Margin="0,8,0,0"/></StackPanel></Border></Grid>
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22"><StackPanel><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Activity log" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><StackPanel Grid.Column="1" Orientation="Horizontal"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="RuntimeOffloadButton" Content="Offload model" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopButton" Content="Stop stack" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></StackPanel></Grid><TextBox x:Name="LogBox" Height="260" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/></StackPanel></Border>
-              </StackPanel>
-            </ScrollViewer>
+            <ScrollViewer x:Name="RuntimesPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel/></ScrollViewer>
 
             <ScrollViewer x:Name="SkillsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Skills &amp; MCPs" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Give DeepSeek Harness extra instructions and trusted tools." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="MCP connections" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Connect folders or import standard mcpServers JSON. Only add tools you trust." Foreground="#9BC9A8" FontSize="12" Margin="0,6,12,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="McpManagerButton" Grid.Column="1" Content="Manage connections" Style="{StaticResource PrimaryButtonStyle}" Padding="17,10"/></Grid></Border><Border Background="#11101A" BorderBrush="#493A82" BorderThickness="1" CornerRadius="16" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Zura Low Thinking" Foreground="#F3F0FF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="A faster, action-first Harness preset for Qwen. It limits routine planning and repeated analysis while keeping deliberate Plan mode thorough." Foreground="#B9ADE8" FontSize="12" Margin="0,6,16,0" TextWrapping="Wrap"/><TextBlock x:Name="LowThinkingStatus" Text="Installs as the default for new Harness chats." Foreground="#898993" FontSize="11" Margin="0,6,0,0"/></StackPanel><Button x:Name="InstallLowThinkingButton" Grid.Column="1" Content="Install &amp; make default" Style="{StaticResource PrimaryButtonStyle}" Padding="17,10"/></Grid></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><StackPanel><TextBlock Text="Harness skills" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Add a skill folder or ZIP containing skill.md. AgentPort keeps these separate from other agent apps." Foreground="#92929B" FontSize="12" Margin="0,6,0,12" TextWrapping="Wrap"/><TextBlock x:Name="SkillsPathText" Foreground="#9B87FF" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/><WrapPanel><Button x:Name="AddSkillFolderButton" Content="Add folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="ImportSkillZipButton" Content="Import ZIP" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="CreateSkillButton" Content="Create blank skill" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="OpenSkillsButton" Content="Open folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="RefreshSkillsButton" Content="Refresh" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Border><TextBlock Text="Installed skills" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,12"/><StackPanel x:Name="SkillsListPanel"/></StackPanel></ScrollViewer>
 
@@ -2833,7 +2856,7 @@ try {
     }
 } catch {}
 
-$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','RuntimeOffloadButton','StopButton','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','RuntimeOffloadButton','StopButton','PurgeVramButton','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 
 # Use the approved AgentPort lockup itself in the sidebar rather than re-typesetting it.
@@ -2900,6 +2923,7 @@ $BrowseModelsButton.Add_Click({ Switch-Page 'Models' })
 $RuntimeOffloadButton.Add_Click({ Offload-Model })
 $RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
 $StopButton.Add_Click({ Kill-Stack; $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; Set-Log 'Stack stopped.' })
+$PurgeVramButton.Add_Click({ Purge-AgentPortVram })
 $ModelsNInferAction.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
 $McpManagerButton.Add_Click({ Show-AgentPortMcpManager })
 $InstallLowThinkingButton.Add_Click({
