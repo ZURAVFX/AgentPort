@@ -13,7 +13,7 @@ import (
 var files embed.FS
 
 func main() {
-    root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v1.7.7-4080")
+    root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v1.7.8-4080")
     err := fs.WalkDir(files, ".", func(path string, entry fs.DirEntry, walkErr error) error {
         if walkErr != nil { return walkErr }
         target := filepath.Join(root, filepath.FromSlash(path))

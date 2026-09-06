@@ -7,16 +7,18 @@ function Get-AgentPortMcpSettings {
 function Convert-AgentPortMcpImport {
     param([string]$Json)
     $document=$Json | ConvertFrom-Json
-    if(-not $document.mcpServers){throw 'Paste a JSON configuration containing mcpServers.'}
+    $serverDocument=if($document.mcpServers){$document.mcpServers}elseif($document.servers){$document.servers}else{$null}
+    if(-not $serverDocument){throw 'Paste a JSON configuration containing mcpServers.'}
     $servers=@()
-    foreach($property in $document.mcpServers.PSObject.Properties){
+    foreach($property in $serverDocument.PSObject.Properties){
         $name=$property.Name; $value=$property.Value
         if($name -notmatch '^[A-Za-z0-9_-]{1,32}$'){throw "Invalid server name: $name"}
         $config=[ordered]@{serverName=$name;toolCallTimeoutMs=60000;failOnStartupError=$true}
-        if($value.url){
+        $serverUrl=if($value.url){[string]$value.url}elseif($value.serverUrl){[string]$value.serverUrl}else{$null}
+        if($serverUrl){
             $uri=$null
-            if(-not [Uri]::TryCreate([string]$value.url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -notin @('http','https')){throw 'Server URL must use http or https.'}
-            $config.transport='streamable-http';$config.url=[string]$value.url
+            if(-not [Uri]::TryCreate($serverUrl,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -notin @('http','https')){throw 'Server URL must use http or https.'}
+            $config.transport='streamable-http';$config.url=$serverUrl
             if($value.headers){$config.headers=$value.headers}
         } else {
             if(-not $value.command){throw "Server $name needs a command or URL."}
@@ -52,7 +54,7 @@ function Show-AgentPortMcpManager {
 <Window.Resources><Style TargetType="Button"><Setter Property="Background" Value="#191D26"/><Setter Property="Foreground" Value="#F4F4F6"/><Setter Property="BorderBrush" Value="#343946"/><Setter Property="BorderThickness" Value="1"/><Setter Property="Padding" Value="14,9"/><Setter Property="Cursor" Value="Hand"/></Style><Style TargetType="TextBox"><Setter Property="Background" Value="#10141B"/><Setter Property="Foreground" Value="#F4F4F6"/><Setter Property="BorderBrush" Value="#343946"/><Setter Property="CaretBrush" Value="White"/><Setter Property="Padding" Value="10"/></Style></Window.Resources>
 <Grid Margin="24"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
 <StackPanel><TextBlock Text="MCP connections" FontSize="25" FontWeight="SemiBold"/><TextBlock Text="Connect trusted tools to DeepSeek Harness. Changes apply the next time Harness starts." Foreground="#9A9AA5" Margin="0,5,0,18"/></StackPanel>
-<Border Grid.Row="1" Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,0,12"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Give Harness access to a folder" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="Choose a folder. AgentPort creates the connection for you." Foreground="#9BC9A8" FontSize="11" Margin="0,4,12,0"/></StackPanel><Button x:Name="Template" Grid.Column="1" Content="Choose folder" Background="#6546E8" BorderBrush="#8068F3"/></Grid></Border>
+<Border Grid.Row="1" Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,0,12"><StackPanel><TextBlock Text="Popular local tools" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="Add a ready-made connection. Install the tool first, then leave its app running." Foreground="#9BC9A8" FontSize="11" Margin="0,4,0,10"/><WrapPanel><Button x:Name="Comfy" Content="Add ComfyUI" Background="#6546E8" BorderBrush="#8068F3" Margin="0,0,8,0"/><Button x:Name="Blender" Content="Add Blender" Background="#6546E8" BorderBrush="#8068F3" Margin="0,0,8,0"/><Button x:Name="Template" Content="Add folder"/></WrapPanel></StackPanel></Border>
 <Expander Grid.Row="2" Header="Import an MCP configuration" Foreground="#D1D1D6" Margin="0,0,0,12"><StackPanel Margin="0,10,0,0"><TextBlock Text="Paste standard JSON containing mcpServers." Foreground="#92929B" FontSize="11" Margin="0,0,0,7"/><TextBox x:Name="Input" Height="120" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/><Button x:Name="Import" Content="Add from JSON" HorizontalAlignment="Left" Margin="0,8,0,0"/></StackPanel></Expander>
 <Border Grid.Row="3" Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="16"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Connected tools" FontSize="15" FontWeight="SemiBold"/><ScrollViewer Grid.Row="1" Margin="0,10,0,10" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Servers"/></ScrollViewer><StackPanel Grid.Row="2"><CheckBox x:Name="Local" Content="Enable MCP tools while using NInfer" Foreground="White"/><TextBlock Text="Leave this off for maximum NInfer speed and context. Local MCP commands run on your PC, so only connect tools you trust." TextWrapping="Wrap" Foreground="#8A8A94" FontSize="11" Margin="0,5,0,0"/></StackPanel></Grid></Border>
 <Grid Grid.Row="4" Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="Status" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="#F1C66D" Margin="0,0,12,0"/><Button x:Name="Save" Grid.Column="1" Content="Save"/><Button x:Name="Restart" Grid.Column="2" Content="Save &amp; restart Harness" Background="#6546E8" BorderBrush="#8068F3" Margin="8,0,0,0"/></Grid>
@@ -72,6 +74,16 @@ function Show-AgentPortMcpManager {
         }
     }
     & $refresh
+    $dialog.FindName('Comfy').Add_Click({
+        $existing=@($settings.servers | Where-Object {$_.name -eq 'comfy-mcp'})
+        if(-not $existing){$config=[ordered]@{serverName='comfy-mcp';transport='stdio';command='comfy-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$true};$settings.servers=@($settings.servers)+[pscustomobject]@{name='comfy-mcp';enabled=$true;config=$config}}
+        & $refresh;$status.Text='ComfyUI added. Install comfy-cli and comfy-mcp, set your ComfyUI workspace as default, then leave ComfyUI running.'
+    })
+    $dialog.FindName('Blender').Add_Click({
+        $existing=@($settings.servers | Where-Object {$_.name -eq 'blender-mcp'})
+        if(-not $existing){$config=[ordered]@{serverName='blender-mcp';transport='stdio';command='blender-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$true};$settings.servers=@($settings.servers)+[pscustomobject]@{name='blender-mcp';enabled=$true;config=$config}}
+        & $refresh;$status.Text='Blender added. Install Blender 5.1+, install the official Blender Lab MCP add-on, start its MCP server, and install the blender-mcp command.'
+    })
     $dialog.FindName('Template').Add_Click({
         $folder=[Windows.Forms.FolderBrowserDialog]::new()
         if($folder.ShowDialog() -eq [Windows.Forms.DialogResult]::OK){

@@ -1,10 +1,19 @@
-# AgentPort 1.7.7: RTX 4080 NInfer
+# AgentPort 1.7.8: RTX 4080 NInfer
 
 1. Extract the release ZIP into a folder.
-2. Open `AgentPort-v1.7.7-4080.exe`.
+2. Open `AgentPort-v1.7.8-4080.exe`.
 3. Choose **Qwen3.8 27B min-Q4 | NInfer RTX 4080**, choose 24k for maximum speed or 49k for maximum context, then press **Start NInfer and open Harness**. AgentPort stops TextGen, loads the matching model, makes NInfer the Harness default and opens Harness automatically.
 4. If NInfer is not installed, the same start button offers the one-time setup. Setup and repair are also available under **Models**.
 5. Open **Skills & MCPs** to add Harness skills, choose a folder connection or import standard `mcpServers` JSON. MCP tools stay off for NInfer unless explicitly enabled, preserving maximum speed and context.
+6. In **Skills & MCPs**, choose **Install & make default** under **Zura Low Thinking**. This copies the preset to `%USERPROFILE%\.dsh\.agent-presets\zura-low-thinking\agent.cordis.yml`, backs up any existing copy, sets it as the Harness default and keeps Ralph to eight rounds. Restart Harness when prompted; existing chats keep their current preset.
+
+### Priority MCPs
+
+In **Skills & MCPs → MCP connections**, **Add ComfyUI** creates the local `comfy-mcp` connection. The user needs Python 3.10+, `comfy-cli` 1.14+, a ComfyUI workspace, and the `comfy-mcp` package. ComfyUI must be left running. The official local setup is documented at <https://docs.comfy.org/agent-tools/mcp#installation>.
+
+**Add Blender** creates the `blender-mcp` connection. The user needs Blender 5.1+, the official Blender Lab MCP add-on installed and started inside Blender, plus the MCP server command installed. The official instructions and security warning are at <https://www.blender.org/lab/mcp-server/>. Do not use an older community Blender add-on with the official Lab server: they use different protocols.
+
+For any other MCP, use **Import an MCP configuration** and paste its standard `mcpServers` JSON. AgentPort also accepts the common `servers` and `serverUrl` variants, validates names and HTTP URLs, allows each connection to be disabled or removed, and stores secrets only in the user's local `.dsh` configuration.
 
 NInfer loads the converted stock Qwen3.8 27B min-Q4 artifact. It does not load the Ridge GGUF. The fast profile uses 24,576 context, INT4 KV, concurrency 1 and MTP3. The 49,152-token profile is the largest allocation verified on this RTX 4080 and left approximately 114 MiB free after startup; 65,536 failed to allocate. The NInfer coding profile excludes globally configured MCP clients and background AI title generation by default to reduce prompt size and competing requests. Users can explicitly enable AgentPort-managed MCP connections for NInfer. Core coding tools remain available.
 
@@ -26,6 +35,6 @@ The real DeepSeek Harness headless profile used AgentPort's settings writer and 
 
 Run `ninfer-4080/Run-AgentPort4080-Benchmark.cmd` for the NInfer-only benchmark. Results are saved after every sample under `ninfer-4080/results`. The old v2 PowerShell entry point redirects to this test by default.
 
-Build the executable from source with `go build -ldflags "-H=windowsgui" -o AgentPort-v1.7.7-4080.exe main.go`. The EXE extracts its bundled scripts into `%LOCALAPPDATA%/AgentPort/v1.7.7-4080`. Startup diagnostics are in that folder's `launcher.log`.
+Build the executable from source with `go build -ldflags "-H=windowsgui" -o AgentPort-v1.7.8-4080.exe main.go`. The EXE extracts its bundled scripts into `%LOCALAPPDATA%/AgentPort/v1.7.8-4080`. Startup diagnostics are in that folder's `launcher.log`.
 
 Work is on `feature/ninfer-rtx4080`; no public push or main-branch change was made. This repository includes an imported installed AgentPort runtime, so review it against the canonical application repository before publishing.
