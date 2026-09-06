@@ -1,0 +1,56 @@
+name: Build AgentPort v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "src/**"
+      - ".github/workflows/build-v2.yml"
+  pull_request:
+    paths:
+      - "src/**"
+      - ".github/workflows/build-v2.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: src
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Validate PowerShell
+        shell: pwsh
+        run: |
+          $failed = $false
+          Get-ChildItem -Recurse -Filter *.ps1 | ForEach-Object {
+            $errors = $null
+            $tokens = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors) {
+              $failed = $true
+              Write-Error "$($_.FullName): $($errors.Message -join '; ')"
+            }
+          }
+          if ($failed) { exit 1 }
+
+      - name: Validate Python helpers
+        run: python -m py_compile ninfer-4080/mcp-check.py ninfer-4080/mcp-tools.py
+
+      - name: Build Windows executable
+        run: go build -ldflags "-H=windowsgui" -o AgentPort.exe main.go
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: AgentPort-Windows
+          path: src/AgentPort.exe
+          if-no-files-found: error

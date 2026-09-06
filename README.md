@@ -1,128 +1,87 @@
-# AgentPort
+<p align="center">
+  <img src="assets/wordmark.svg" alt="AgentPort" width="420">
+</p>
 
-AgentPort connects **local GGUF AI models** to **DeepSeek Harness** on Windows.
+<p align="center">
+  A one-click local AI agent for Windows, NVIDIA GPUs, ComfyUI and Blender.
+</p>
 
-It gives you one desktop app for setting up TextGen, choosing a local model, checking GPU/RAM fit, and wiring that model into DeepSeek Harness without manually editing config files or juggling launch scripts.
+<p align="center">
+  <a href="https://github.com/ZURAVFX/AgentPort/releases/latest"><strong>Download AgentPort for Windows</strong></a>
+  ·
+  <a href="https://github.com/ZURAVFX/AgentPort/releases">Previous versions</a>
+  ·
+  <a href="LICENSE">MIT licence</a>
+</p>
 
-## Current release
+![AgentPort 2.0 home screen](assets/agentport-v2-home.png)
 
-**v1.6.2** is the current Windows build, and the first one verified to open its window on a normal Windows 11 desktop.
+## What AgentPort does
 
-v1.6.2 fixes the startup failure that made v1.6.0 and v1.6.1 appear to do nothing when launched:
+AgentPort turns a compatible Windows PC into a private local AI workstation. It can download a recommended model, run it on your NVIDIA GPU, open DeepSeek Harness with the correct model already selected, and connect tools such as ComfyUI and Blender.
 
-- **Fixed the startup crash.** The model scanner passed a comma-separated list straight to `Join-Path`, which threw before the window was ever created. AgentPort now opens reliably.
-- **Home page fits on screen.** The layout was tightened and the window is clamped and centred to your screen work area, so the quick-action row is visible without scrolling and the window never opens under the taskbar.
-- **Clear helper (`mmproj`) import.** Importing a local GGUF now offers to attach a projector/helper `mmproj-*.gguf` file when one isn't found beside the model, and passes `--mmproj` automatically.
-- Correct version shown in the app footer.
-
-It keeps everything from the v1.6 setup/discovery update:
-
-- clear **Installed / Missing / Needs repair** flags for TextGen and DeepSeek Harness
-- one-click **Install** and **Repair** buttons for TextGen and DeepSeek Harness
-- automatic GGUF model discovery from AgentPort, TextGen, Ollama, LM Studio, Unsloth Studio, Hugging Face cache, Jan and GPT4All locations
-- handling for `mmproj` helper files used by multimodal GGUF models
-- simple Skills page with add / import / create / open / refresh actions
-- Windows PowerShell STA runtime with a visible startup error instead of a silent exit
-- launcher diagnostics written to `%LOCALAPPDATA%\AgentPort\launcher-v1.6.2.log`
-
-## Download
-
-**[Download AgentPort v1.6.2 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v1.6.2/AgentPort_v1.6.2.exe)**
-
-[View the v1.6.2 release notes](https://github.com/ZURAVFX/AgentPort/releases/tag/v1.6.2)
-
-The `.sha256` file is optional. You do **not** need it to install or run AgentPort; it is only provided for users who want to verify the downloaded EXE.
+- One-click recommended model setup
+- Automatic GPU, VRAM and RAM detection
+- Live token speed and memory usage
+- 48k context on the verified 16 GB setup
+- Guided ComfyUI and Blender MCP connections
+- Generic MCP JSON import, with no special folder required
+- Existing GGUF discovery for users who already have models
+- Reliable stop, restart, switching and VRAM release controls
 
 ## Quick start
 
-1. Download `AgentPort_v1.6.2.exe`.
-2. Double-click the EXE. No additional release files are required.
-3. Open **Settings** and check the TextGen / DeepSeek Harness flags.
-4. Use **Install TextGen** and **Install Harness** if either is missing.
-5. Press **Scan for models**, or download/import a GGUF model.
-6. Choose context length, KV cache and GPU offload mode.
-7. Press **Apply & Start**.
+1. [Download the latest `AgentPort.exe`](https://github.com/ZURAVFX/AgentPort/releases/latest).
+2. Double-click it and choose **Start recommended local agent**.
+3. AgentPort downloads what is missing, starts the model and opens Harness.
 
-First launch needs internet because TextGen, DeepSeek Harness and local models can be large downloads.
+The first setup downloads approximately 13.6 GB. Downloads resume if interrupted and are verified before use. AgentPort is not currently code-signed, so Windows may show SmartScreen; choose **More info → Run anyway** only when the file came from this repository.
 
-## What AgentPort manages
+## Recommended 16 GB setup
 
-- TextGen local API on port `5100`
-- DeepSeek Harness UI on port `3080`
-- GGUF model selection
-- context length and KV cache
-- GPU offload mode
-- basic GPU/RAM fit checks
-- model import and Hugging Face GGUF download flow
-- Harness-only skills folder
-- runtime logs and process cleanup
+AgentPort 2.0 defaults to **Qwen3-Coder 30B-A3B Instruct IQ3_XXS** at **49,152 tokens** through a managed CUDA llama.cpp runtime.
 
-## Model discovery
+On the tested RTX 4080 16 GB system it completed one autonomous session that created, validated and ran a ComfyUI workflow, then modified and independently verified a Blender 5.2 scene. The weighted generation rate across that test was approximately **104 tokens/second**.
 
-AgentPort scans common local AI model locations, including:
+NInfer remains available in **Advanced** for its compatible converted model. It measured roughly 75–80 tokens/second on the same card, but offered less usable context, so it is not the everyday default.
 
-- AgentPort model folder
-- TextGen `user_data/models`
-- Ollama default and `OLLAMA_MODELS`
-- LM Studio defaults and detected config paths
-- Unsloth Studio defaults and `UNSLOTH_STUDIO_HOME`
-- Hugging Face cache via `HF_HOME` / `HF_HUB_CACHE`
-- Jan model folders
-- GPT4All model folders
+## ComfyUI, Blender and other MCPs
 
-External GGUF models can be launched in place. AgentPort also looks beside a selected model for `mmproj*.gguf` helper files and passes them to TextGen when found. When you import a model whose helper isn't adjacent, AgentPort offers to pick the `mmproj` file directly.
+Open **Skills & MCPs → Manage connections** inside AgentPort.
 
-## Skills
+- **ComfyUI:** enter the local ComfyUI address, then choose **Install & connect ComfyUI**.
+- **Blender:** enable and start the official Blender Lab MCP add-on, then choose **Install & connect Blender**.
+- **Other MCPs:** paste the publisher's standard `mcpServers` JSON. AgentPort supports command-based and Streamable HTTP connections.
 
-The Skills page is for **DeepSeek Harness-only skills**.
+Skills and MCPs are kept separate: a skill supplies instructions, while an MCP supplies callable tools. ComfyUI and Blender do not require matching skills.
 
-You can:
+## Requirements
 
-- add an existing skill folder
-- import a skill ZIP
-- create a blank `skill.md` template
-- open the skills folder
-- refresh the installed list
+- Windows 10 or 11
+- NVIDIA RTX 30 or 40 series GPU
+- 8 GB VRAM minimum; 16 GB recommended for the verified default
+- 24 GB system RAM minimum; 32 GB or more recommended
+- Approximately 16 GB free disk space for the recommended model and runtime
+- Internet access during initial setup
 
-Skills are stored separately so AgentPort does not inject another agent catalogue into DeepSeek Harness.
+Exact performance and context capacity depend on GPU memory, system RAM and other open GPU applications. The published end-to-end results were measured on Windows with an RTX 4080 16 GB and 64 GB RAM.
 
-```text
-%USERPROFILE%\.dsh\harness_skills
-```
+## Existing models and advanced options
 
-## Settings and files
+AgentPort discovers `.gguf` models in common local model folders and lets you run them without copying them. These models are labelled **Unverified** because context size, tool ability and memory needs differ.
 
-AgentPort stores persistent settings here:
+Manual model tuning, legacy TextGen controls, NInfer and Hugging Face model downloads are available under **Advanced** without cluttering the first-run experience.
 
-```text
-%USERPROFILE%\.dsh
-```
+## Privacy
 
-Main local runtime folders default to:
+Inference runs locally. AgentPort stores its settings under `%USERPROFILE%\.dsh` and managed runtime files under `%LOCALAPPDATA%\AgentPort`. Model/runtime downloads come directly from their published upstream sources.
 
-```text
-%PUBLIC%\AgentPort\textgen
-%PUBLIC%\AgentPort\models
-%LOCALAPPDATA%\AgentPort\harness-workspace
-```
+## Source and previous versions
 
-If AgentPort ever fails during startup, check:
+The current buildable source is in [`src/`](src/). Git tags and [GitHub Releases](https://github.com/ZURAVFX/AgentPort/releases) preserve previous versions, so the main page can stay focused on the current release.
 
-```text
-%LOCALAPPDATA%\AgentPort\launcher-v1.6.2.log
-```
-
-## Building from source
-
-The v1.6.2 EXE is reproducible from `.release-build/v1.6.2/` (fixed PowerShell app, Go launcher, icon resource). See [`.release-build/v1.6.2/BUILD.md`](.release-build/v1.6.2/BUILD.md). CI can rebuild it from the **Build and release AgentPort v1.6.2** workflow (manual dispatch).
-
-## Notes
-
-- Windows only.
-- Models are not included.
-- Large models and runtimes can take a while to download.
-- The GPU/RAM estimate is a launch guide, not a benchmark.
+See the [v2.0 validation record](src/TEAM-RELEASE-CHECKLIST.md) for the completed test gates.
 
 ## Licence
 
-MIT
+[MIT](LICENSE)
