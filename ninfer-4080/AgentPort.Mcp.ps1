@@ -1,7 +1,39 @@
+function Resolve-AgentPortMcpCommand {
+    param([string]$Command)
+    if(-not $Command -or $Command -notin @('comfy-mcp','blender-mcp')){return $Command}
+    $found=Get-Command $Command -ErrorAction SilentlyContinue | Select-Object -First 1
+    if($found -and $found.Source){return [string]$found.Source}
+    $candidates=switch($Command){
+        'comfy-mcp' {@(
+            (Join-Path $env:USERPROFILE '.codex\mcp\comfy-mcp\Scripts\comfy-mcp.exe'),
+            (Join-Path $env:USERPROFILE '.codex\mcp\comfy-mcp\Scripts\comfy-mcp.cmd')
+        )}
+        'blender-mcp' {@(
+            (Join-Path $env:USERPROFILE '.codex\tools\blender-official\mcp\.venv\Scripts\blender-mcp.exe'),
+            (Join-Path $env:USERPROFILE '.codex\tools\blender-official\mcp\.venv\Scripts\blender-mcp.cmd')
+        )}
+    }
+    foreach($candidate in @($candidates)){if(Test-Path -LiteralPath $candidate){return (Resolve-Path -LiteralPath $candidate).Path}}
+    return $Command
+}
+
+function Test-AgentPortMcpCommandAvailable {
+    param([string]$Command)
+    $resolved=Resolve-AgentPortMcpCommand $Command
+    if([IO.Path]::IsPathRooted($resolved)){return Test-Path -LiteralPath $resolved}
+    return $null -ne (Get-Command $resolved -ErrorAction SilentlyContinue)
+}
+
 function Get-AgentPortMcpSettings {
     $path=Join-Path $script:ConfigDir 'agentport-mcp.json'
-    if(Test-Path $path){return Get-Content $path -Raw | ConvertFrom-Json}
-    return [pscustomobject]@{useWithNInfer=$false;servers=@()}
+    if(Test-Path $path){$settings=Get-Content $path -Raw | ConvertFrom-Json}else{$settings=[pscustomobject]@{useWithNInfer=$false;servers=@()}}
+    foreach($server in @($settings.servers)){
+        if($server.config -and $server.config.transport -eq 'stdio'){
+            $server.config.command=Resolve-AgentPortMcpCommand ([string]$server.config.command)
+            $server.config.failOnStartupError=$false
+        }
+    }
+    return $settings
 }
 
 function Convert-AgentPortMcpImport {
@@ -76,14 +108,14 @@ function Show-AgentPortMcpManager {
     & $refresh
     $dialog.FindName('Comfy').Add_Click({
         $existing=@($settings.servers | Where-Object {$_.name -eq 'comfy-mcp'})
-        $ready=$null -ne (Get-Command 'comfy-mcp' -ErrorAction SilentlyContinue)
-        if(-not $existing){$config=[ordered]@{serverName='comfy-mcp';transport='stdio';command='comfy-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$false};$settings.servers=@($settings.servers)+[pscustomobject]@{name='comfy-mcp';enabled=$ready;config=$config}}
+        $command=Resolve-AgentPortMcpCommand 'comfy-mcp';$ready=Test-AgentPortMcpCommandAvailable $command
+        if(-not $existing){$config=[ordered]@{serverName='comfy-mcp';transport='stdio';command=$command;args=@();toolCallTimeoutMs=60000;failOnStartupError=$false};$settings.servers=@($settings.servers)+[pscustomobject]@{name='comfy-mcp';enabled=$ready;config=$config}}
         & $refresh;$status.Text=if($ready){'ComfyUI added and enabled. Leave ComfyUI running.'}else{'ComfyUI added but left disabled. Install comfy-cli and comfy-mcp, set your workspace as default, then tick it here.'}
     })
     $dialog.FindName('Blender').Add_Click({
         $existing=@($settings.servers | Where-Object {$_.name -eq 'blender-mcp'})
-        $ready=$null -ne (Get-Command 'blender-mcp' -ErrorAction SilentlyContinue)
-        if(-not $existing){$config=[ordered]@{serverName='blender-mcp';transport='stdio';command='blender-mcp';args=@();toolCallTimeoutMs=60000;failOnStartupError=$false};$settings.servers=@($settings.servers)+[pscustomobject]@{name='blender-mcp';enabled=$ready;config=$config}}
+        $command=Resolve-AgentPortMcpCommand 'blender-mcp';$ready=Test-AgentPortMcpCommandAvailable $command
+        if(-not $existing){$config=[ordered]@{serverName='blender-mcp';transport='stdio';command=$command;args=@();toolCallTimeoutMs=60000;failOnStartupError=$false};$settings.servers=@($settings.servers)+[pscustomobject]@{name='blender-mcp';enabled=$ready;config=$config}}
         & $refresh;$status.Text=if($ready){'Blender added and enabled. Keep the Blender MCP server running.'}else{'Blender added but left disabled. Install Blender 5.1+, the official Lab add-on and blender-mcp, then tick it here.'}
     })
     $dialog.FindName('Template').Add_Click({
