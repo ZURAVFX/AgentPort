@@ -66,10 +66,10 @@ function Convert-AgentPortMcpImport {
 }
 
 function Write-AgentPortMcpOverlay {
-    param([string]$Path,[switch]$NInfer)
+    param([string]$Path,[switch]$NInfer,[switch]$ForceDisableNInfer)
     $settings=Get-AgentPortMcpSettings
     $entries=@()
-    if(-not $NInfer -or $settings.useWithNInfer){
+    if(-not $NInfer -or ($settings.useWithNInfer -and -not $ForceDisableNInfer)){
         foreach($server in @($settings.servers)){
             if($server.enabled){$entryConfig=[ordered]@{};foreach($key in $server.config.PSObject.Properties.Name){$entryConfig[$key]=$server.config.$key};$entryConfig.failOnStartupError=$false;$entries+=@{id=('agentport-mcp-'+$server.name);name='@deepseek-ai/dsh-mcp-client';config=$entryConfig}}
         }
@@ -88,7 +88,7 @@ function Show-AgentPortMcpManager {
 <StackPanel><TextBlock Text="MCP connections" FontSize="25" FontWeight="SemiBold"/><TextBlock Text="Connect trusted tools to DeepSeek Harness. Changes apply the next time Harness starts." Foreground="#9A9AA5" Margin="0,5,0,18"/></StackPanel>
 <Border Grid.Row="1" Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="14" Padding="16" Margin="0,0,0,12"><StackPanel><TextBlock Text="Popular local tools" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="Add a ready-made connection. Install the tool first, then leave its app running." Foreground="#9BC9A8" FontSize="11" Margin="0,4,0,10"/><WrapPanel><Button x:Name="Comfy" Content="Add ComfyUI" Background="#6546E8" BorderBrush="#8068F3" Margin="0,0,8,0"/><Button x:Name="Blender" Content="Add Blender" Background="#6546E8" BorderBrush="#8068F3" Margin="0,0,8,0"/><Button x:Name="Template" Content="Add folder"/></WrapPanel></StackPanel></Border>
 <Expander Grid.Row="2" Header="Import an MCP configuration" Foreground="#D1D1D6" Margin="0,0,0,12"><StackPanel Margin="0,10,0,0"><TextBlock Text="Paste standard JSON containing mcpServers." Foreground="#92929B" FontSize="11" Margin="0,0,0,7"/><TextBox x:Name="Input" Height="120" AcceptsReturn="True" VerticalScrollBarVisibility="Auto" FontFamily="Consolas"/><Button x:Name="Import" Content="Add from JSON" HorizontalAlignment="Left" Margin="0,8,0,0"/></StackPanel></Expander>
-<Border Grid.Row="3" Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="16"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Connected tools" FontSize="15" FontWeight="SemiBold"/><ScrollViewer Grid.Row="1" Margin="0,10,0,10" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Servers"/></ScrollViewer><StackPanel Grid.Row="2"><CheckBox x:Name="Local" Content="Enable MCP tools while using NInfer" Foreground="White"/><TextBlock Text="Leave this off for maximum NInfer speed and context. Local MCP commands run on your PC, so only connect tools you trust." TextWrapping="Wrap" Foreground="#8A8A94" FontSize="11" Margin="0,5,0,0"/></StackPanel></Grid></Border>
+<Border Grid.Row="3" Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="16"><Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions><TextBlock Text="Connected tools" FontSize="15" FontWeight="SemiBold"/><ScrollViewer Grid.Row="1" Margin="0,10,0,10" VerticalScrollBarVisibility="Auto"><StackPanel x:Name="Servers"/></ScrollViewer><StackPanel Grid.Row="2"><CheckBox x:Name="Local" Content="Enable MCP tools while using NInfer (advanced)" Foreground="White"/><TextBlock Text="The 24k RTX 4080 fast profile omits oversized MCP tool lists when they would exceed context. Use TextGen for full MCP access." TextWrapping="Wrap" Foreground="#8A8A94" FontSize="11" Margin="0,5,0,0"/></StackPanel></Grid></Border>
 <Grid Grid.Row="4" Margin="0,14,0,0"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="Status" VerticalAlignment="Center" TextWrapping="Wrap" Foreground="#F1C66D" Margin="0,0,12,0"/><Button x:Name="Save" Grid.Column="1" Content="Save"/><Button x:Name="Restart" Grid.Column="2" Content="Save &amp; restart Harness" Background="#6546E8" BorderBrush="#8068F3" Margin="8,0,0,0"/></Grid>
 </Grid></Window>
 '@

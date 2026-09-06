@@ -6,6 +6,7 @@
 4. If NInfer is not installed, the same start button offers the one-time setup. Setup and repair are also available under **Models**.
 5. Open **Skills & MCPs** to add Harness skills, choose a folder connection or import standard `mcpServers` JSON. MCP tools stay off for NInfer unless explicitly enabled, preserving maximum speed and context.
 6. In **Skills & MCPs**, choose **Install & make default** under **Zura Low Thinking**. This copies the preset to `%USERPROFILE%\.dsh\.agent-presets\zura-low-thinking\agent.cordis.yml`, backs up any existing copy, sets it as the Harness default and keeps Ralph to eight rounds. Restart Harness when prompted; existing chats keep their current preset.
+7. If Harness behaves oddly or **New chat** does not respond, click **Update Harness** on Home. AgentPort checks and caches the latest published Harness package, switches away from an older local checkout without deleting it, and restarts Harness while keeping the selected model running.
 
 ### Priority MCPs
 
@@ -15,7 +16,9 @@ In **Skills & MCPs → MCP connections**, **Add ComfyUI** creates the local `com
 
 For any other MCP, use **Import an MCP configuration** and paste its standard `mcpServers` JSON. AgentPort also accepts the common `servers` and `serverUrl` variants, validates names and HTTP URLs, allows each connection to be disabled or removed, and stores secrets only in the user's local `.dsh` configuration.
 
-NInfer loads the converted stock Qwen3.8 27B min-Q4 artifact. It does not load the Ridge GGUF. The fast profile uses 24,576 context, INT4 KV, concurrency 1 and MTP3. The 49,152-token profile is the largest allocation verified on this RTX 4080 and left approximately 114 MiB free after startup; 65,536 failed to allocate. The NInfer coding profile excludes globally configured MCP clients and background AI title generation by default to reduce prompt size and competing requests. Users can explicitly enable AgentPort-managed MCP connections for NInfer. Core coding tools remain available.
+For the RTX 4080 24k NInfer fast profile, oversized MCP tool catalogues are automatically omitted from the NInfer prompt. This prevents the common 26k-token context rejection that makes a new Harness chat appear unresponsive. TextGen remains available when full MCP tool access is required.
+
+NInfer loads the converted stock Qwen3.8 27B min-Q4 artifact. It does not load the Ridge GGUF. The fast profile uses 24,576 context, INT4 KV, concurrency 1 and MTP3. The 49,152-token profile is the largest allocation verified on this RTX 4080 and left approximately 114 MiB free after startup; 65,536 failed to allocate. The NInfer coding profile excludes globally configured MCP clients and background AI title generation by default to reduce prompt size and competing requests. AgentPort-managed MCP tool catalogues are automatically suppressed for the 24k NInfer profile when they would exceed context; use TextGen for full MCP access. Core coding tools remain available.
 
 This pinned 16 GB Ada fork publishes one practical artifact for this card: Qwen3.8 27B min-Q4. Upstream NInfer lists additional Qwen3.6/3.8 artifacts, but their files are 16.29 to 21.22 GiB before runtime memory and do not fit this verified 16 GB resident profile. AgentPort therefore does not advertise them as compatible downloads.
 

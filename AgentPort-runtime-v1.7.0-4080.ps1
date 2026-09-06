@@ -63,6 +63,8 @@ $script:Defaults = [ordered]@{
     active_model = ''
     active_context_tokens = 0
     active_offload_mode = ''
+    harness_runtime = 'auto'
+    harness_last_update = ''
 }
 
 $script:ContextPresets = [ordered]@{
@@ -1697,6 +1699,7 @@ function Test-HarnessInstalled {
 
 function Get-HarnessInstallState {
     $root=[string]$script:Config.harness_root
+    if(([string]$script:Config.harness_runtime -eq 'npx-latest') -and (Test-Path -LiteralPath $script:PortableNpx)){ return [pscustomobject]@{State='Latest enabled'; Detail='Latest published Harness package will be used at startup'; Kind='ok'} }
     if(Test-Path -LiteralPath (Join-Path $root 'package.json')){ return [pscustomobject]@{State='Installed'; Detail=$root; Kind='ok'} }
     if(Test-Path -LiteralPath $script:PortableNpx){ return [pscustomobject]@{State='Installed'; Detail='Portable Node runtime ready. Harness runs through npx cache.'; Kind='ok'} }
     if(Test-Path -LiteralPath $root){ return [pscustomobject]@{State='Needs repair'; Detail='Harness workspace exists but runtime is not prepared'; Kind='warn'} }
@@ -1761,6 +1764,9 @@ function Install-DeepSeekHarness([bool]$Repair=$false){
             throw $detail
         }
         'AgentPort Harness workspace. Do not delete unless you want to reset the local Harness runtime.' | Set-Content -LiteralPath (Join-Path $root 'README.agentport.txt') -Encoding UTF8
+        $script:Config.harness_runtime='npx-latest'
+        $script:Config.harness_last_update=(Get-Date).ToString('o')
+        Save-Config
         Set-LaunchPhase 1 'DeepSeek Harness ready' 'Harness runtime is prepared. You can now Apply & Start.' 100 'ok'
         Set-Log 'DeepSeek Harness runtime is installed and ready.' 'ok'
         Refresh-InstallStatus
@@ -1995,19 +2001,83 @@ function Start-Harness {
     if(-not (Test-Path $logs)){ New-Item -ItemType Directory -Force -Path $logs | Out-Null }
     $out = Join-Path $logs 'harness.out.log'
     $err = Join-Path $logs 'harness.err.log'
-    if(Test-Path -LiteralPath (Join-Path $root 'package.json')){
+    $useLocalHarness=(Test-Path -LiteralPath (Join-Path $root 'package.json')) -and ([string]$script:Config.harness_runtime -ne 'npx-latest')
+    if($useLocalHarness){
         $cmd = 'set "TEXTGEN_API_KEY=local-textgen"&& set "NINFER_API_KEY=local-textgen"&& set "UNSLOTH_STUDIO_API_KEY=local-textgen"&& set "FREETOKEN_API_KEY=local-textgen"&& set "DSH_STUDIO_MODEL={0}"&& set "DSH_STUDIO_CONTEXT={1}"&& corepack pnpm dsh web --no-open > "{2}" 2> "{3}"' -f $script:PendingModel,$script:PendingContext,$out,$err
     } else {
         $npx=Ensure-PortableNode
         $cmd = 'set "TEXTGEN_API_KEY=local-textgen"&& set "NINFER_API_KEY=local-textgen"&& set "UNSLOTH_STUDIO_API_KEY=local-textgen"&& set "FREETOKEN_API_KEY=local-textgen"&& set "DSH_STUDIO_MODEL={0}"&& set "DSH_STUDIO_CONTEXT={1}"&& set "npm_config_cache={2}"&& "{3}" --yes @deepseek-ai/dsh@latest web --no-open > "{4}" 2> "{5}"' -f $script:PendingModel,$script:PendingContext,$script:NpmCacheDir,$npx,$out,$err
     }
     $mcpPatch=Join-Path $script:AppDataDir 'agentport-mcp.patch.json'
-    if($script:PendingModel -eq 'qwen3.8-27b-minq4'){Write-AgentPortMcpOverlay $mcpPatch -NInfer | Out-Null}else{Write-AgentPortMcpOverlay $mcpPatch | Out-Null}
+    if($script:PendingModel -eq 'qwen3.8-27b-minq4'){
+        # The 24k RTX 4080 profile cannot fit a full MCP tool catalogue in its
+        # prompt. Keep the user's MCP preference intact for TextGen, but omit
+        # those schemas from NInfer so a new Harness chat remains usable.
+        Write-AgentPortMcpOverlay $mcpPatch -NInfer -ForceDisableNInfer | Out-Null
+    } else {Write-AgentPortMcpOverlay $mcpPatch | Out-Null}
     $patchArgs='--patch "'+$mcpPatch+'"'
     if($script:PendingModel -eq 'qwen3.8-27b-minq4' -and $script:NInferHarnessPatch){$patchArgs+=' --patch "'+$script:NInferHarnessPatch+'"'}
     $cmd=$cmd.Replace('dsh web --no-open',('dsh web '+$patchArgs+' --no-open'))
     $cmd=$cmd.Replace('@deepseek-ai/dsh@latest web --no-open',('@deepseek-ai/dsh@latest web '+$patchArgs+' --no-open'))
     $script:HarnessProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
+}
+
+function Update-DeepSeekHarness {
+    $wasOnline=Test-Port 3080
+    $oldModel=[string]$script:PendingModel
+    $oldContext=[int]$script:PendingContext
+    try {
+        Set-LaunchPhase 1 'Updating DeepSeek Harness' 'Checking the latest published package and refreshing the local cache.' 15
+        Ensure-AgentPortRuntimeDirs
+        if($wasOnline){
+            Kill-HarnessOnly
+            Start-Sleep -Milliseconds 700
+        }
+        $npx=Ensure-PortableNode
+        $logs=Join-Path ([string]$script:Config.textgen_root) 'logs'
+        if(-not(Test-Path -LiteralPath $logs)){New-Item -ItemType Directory -Force -Path $logs | Out-Null}
+        $out=Join-Path $logs 'harness-update.out.log'
+        $err=Join-Path $logs 'harness-update.err.log'
+        Set-LaunchPhase 1 'Updating DeepSeek Harness' 'Downloading the newest published Harness package.' 40
+        $cmd='set "npm_config_cache={0}"&& "{1}" --yes @deepseek-ai/dsh@latest --version > "{2}" 2> "{3}"' -f $script:NpmCacheDir,$npx,$out,$err
+        $p=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory ([string]$script:Config.harness_root) -WindowStyle Hidden -PassThru
+        $p.WaitForExit(180000)
+        if(-not $p.HasExited){try{$p.Kill()}catch{};throw 'DeepSeek Harness update timed out after three minutes.'}
+        if($p.ExitCode -ne 0){
+            $detail=Get-RecentLogText $err 18
+            if(-not $detail){$detail=Get-RecentLogText $out 18}
+            if(-not $detail){$detail='npx exited with code '+$p.ExitCode}
+            throw $detail
+        }
+        $versionText=((Get-Content -LiteralPath @($out,$err) -ErrorAction SilentlyContinue) -join ' ').Trim()
+        $versionMatch=[regex]::Match($versionText,'\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?')
+        $version=if($versionMatch.Success){$versionMatch.Value}else{'latest'}
+        $script:Config.harness_runtime='npx-latest'
+        $script:Config.harness_last_update=(Get-Date).ToString('o')
+        Save-Config
+        Set-LaunchPhase 1 'DeepSeek Harness updated' ("Latest published Harness package ($version) is ready. Local source files were preserved.") 82 'ok'
+        Set-Log ("DeepSeek Harness updated to the latest published package ($version).") 'ok'
+        Refresh-InstallStatus
+        if($wasOnline){
+            if(-not $script:PendingModel){$script:PendingModel=[string]$script:Config.active_model}
+            if(-not $script:PendingContext -or $script:PendingContext -lt 2048){$script:PendingContext=[int]$script:Config.active_context_tokens}
+            if((Test-Port 3080)){throw 'Harness update completed, but the old Harness process is still using port 3080.'}
+            Start-Harness
+            Set-Log 'Harness is restarting with the updated package. The current NInfer model remains loaded.'
+        }
+        Set-LaunchPhase 1 'DeepSeek Harness ready' 'The latest package is installed. Start Harness again if it is currently offline.' 100 'ok'
+    } catch {
+        if($wasOnline -and -not (Test-Port 3080)){
+            try {
+                if(-not $script:PendingModel){$script:PendingModel=$oldModel}
+                if(-not $script:PendingContext -or $script:PendingContext -lt 2048){$script:PendingContext=$oldContext}
+                Start-Harness
+            } catch {}
+        }
+        Set-LaunchPhase 1 'Harness update failed' $_.Exception.Message 100 'error'
+        Set-Log $_.Exception.Message 'error'
+        [System.Windows.MessageBox]::Show($_.Exception.Message,'Harness update')|Out-Null
+    }
 }
 
 function Get-HarnessStartupUrl {
@@ -2796,7 +2866,7 @@ function Show-ProfilesMenu {
 
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14">
                   <StackPanel>
-                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Runtime health" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="AgentPort-owned services and GPU memory, all in one place." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="RuntimeOffloadButton" Content="Offload model" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopButton" Content="Stop stack" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Purge VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></StackPanel></Grid>
+                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Runtime health" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="AgentPort-owned services and GPU memory, all in one place." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="HarnessUpdateButton" Content="Update Harness" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="RuntimeOffloadButton" Content="Offload model" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopButton" Content="Stop stack" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Purge VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></StackPanel></Grid>
                     <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Used by the current AgentPort stack" Foreground="#777781" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="System RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating..." Foreground="#85858F" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border></Grid>
                     <TextBlock Text="Purge VRAM stops only AgentPort-owned TextGen, Harness and NInfer processes, then checks both API ports are free. It does not kill unrelated GPU applications." Foreground="#9999A3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
                     <TextBox x:Name="LogBox" Height="210" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
@@ -2820,7 +2890,7 @@ function Show-ProfilesMenu {
 
             <ScrollViewer x:Name="SkillsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Skills &amp; MCPs" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Give DeepSeek Harness extra instructions and trusted tools." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="MCP connections" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Connect folders or import standard mcpServers JSON. Only add tools you trust." Foreground="#9BC9A8" FontSize="12" Margin="0,6,12,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="McpManagerButton" Grid.Column="1" Content="Manage connections" Style="{StaticResource PrimaryButtonStyle}" Padding="17,10"/></Grid></Border><Border Background="#11101A" BorderBrush="#493A82" BorderThickness="1" CornerRadius="16" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Zura Low Thinking" Foreground="#F3F0FF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="A faster, action-first Harness preset for Qwen. It limits routine planning and repeated analysis while keeping deliberate Plan mode thorough." Foreground="#B9ADE8" FontSize="12" Margin="0,6,16,0" TextWrapping="Wrap"/><TextBlock x:Name="LowThinkingStatus" Text="Installs as the default for new Harness chats." Foreground="#898993" FontSize="11" Margin="0,6,0,0"/></StackPanel><Button x:Name="InstallLowThinkingButton" Grid.Column="1" Content="Install &amp; make default" Style="{StaticResource PrimaryButtonStyle}" Padding="17,10"/></Grid></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><StackPanel><TextBlock Text="Harness skills" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Add a skill folder or ZIP containing skill.md. AgentPort keeps these separate from other agent apps." Foreground="#92929B" FontSize="12" Margin="0,6,0,12" TextWrapping="Wrap"/><TextBlock x:Name="SkillsPathText" Foreground="#9B87FF" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/><WrapPanel><Button x:Name="AddSkillFolderButton" Content="Add folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="ImportSkillZipButton" Content="Import ZIP" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="CreateSkillButton" Content="Create blank skill" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="OpenSkillsButton" Content="Open folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="RefreshSkillsButton" Content="Refresh" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Border><TextBlock Text="Installed skills" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,12"/><StackPanel x:Name="SkillsListPanel"/></StackPanel></ScrollViewer>
 
-            <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Settings" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Paths and maintenance. AgentPort can bootstrap its own local runtimes on a fresh Windows PC." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Locations" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Models" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="ModelsPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="ModelsPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="TextGenPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="TextGenPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness workspace" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="HarnessPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="HarnessPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Setup checks" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="NInfer is the dedicated RTX 4080 fast path. TextGen is optional and supports general GGUF models. DeepSeek Harness is the agent interface used by either backend." Foreground="#92929B" FontSize="11" Margin="0,5,0,16" TextWrapping="Wrap"/><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="TextGenInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="TextGenInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="TextGenInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallTextGenButton" Content="Install TextGen" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairTextGenButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="DeepSeek Harness" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="HarnessInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="HarnessInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="HarnessInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallHarnessButton" Content="Install Harness" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairHarnessButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Button x:Name="ScanModelsButton" Content="Scan for models from AgentPort, TextGen, Ollama, LM Studio, Unsloth, Hugging Face, Jan and GPT4All" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Border><Border Background="#0D1117" BorderBrush="#33222A" BorderThickness="1" CornerRadius="18" Padding="24"><StackPanel><TextBlock Text="Component removal" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Destructive actions are kept separate to prevent accidental clicks." Foreground="#7F808A" FontSize="11" Margin="0,4,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="UninstallTextGenButton" Content="Uninstall TextGen app files" Style="{StaticResource DangerButton}"/><Button x:Name="UninstallHarnessButton" Content="Uninstall DeepSeek Harness" Style="{StaticResource DangerButton}" Margin="8,0,0,0"/></StackPanel></StackPanel></Border></StackPanel></ScrollViewer>
+            <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Settings" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Paths and maintenance. AgentPort can bootstrap its own local runtimes on a fresh Windows PC." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Locations" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Models" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="ModelsPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="ModelsPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="TextGenPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="TextGenPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness workspace" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="HarnessPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="HarnessPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Setup checks" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="NInfer is the dedicated RTX 4080 fast path. TextGen is optional and supports general GGUF models. DeepSeek Harness is the agent interface used by either backend." Foreground="#92929B" FontSize="11" Margin="0,5,0,16" TextWrapping="Wrap"/><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="TextGenInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="TextGenInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="TextGenInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallTextGenButton" Content="Install TextGen" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairTextGenButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="DeepSeek Harness" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="HarnessInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="HarnessInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="HarnessInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallHarnessButton" Content="Install Harness" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="HarnessUpdateButtonSettings" Content="Update to latest" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/><Button x:Name="RepairHarnessButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Button x:Name="ScanModelsButton" Content="Scan for models from AgentPort, TextGen, Ollama, LM Studio, Unsloth, Hugging Face, Jan and GPT4All" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Border><Border Background="#0D1117" BorderBrush="#33222A" BorderThickness="1" CornerRadius="18" Padding="24"><StackPanel><TextBlock Text="Component removal" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Destructive actions are kept separate to prevent accidental clicks." Foreground="#7F808A" FontSize="11" Margin="0,4,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="UninstallTextGenButton" Content="Uninstall TextGen app files" Style="{StaticResource DangerButton}"/><Button x:Name="UninstallHarnessButton" Content="Uninstall DeepSeek Harness" Style="{StaticResource DangerButton}" Margin="8,0,0,0"/></StackPanel></StackPanel></Border></StackPanel></ScrollViewer>
           </Grid>
         </Grid>
       </Grid>
@@ -2856,7 +2926,7 @@ try {
     }
 } catch {}
 
-$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','RuntimeOffloadButton','StopButton','PurgeVramButton','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','RuntimeOffloadButton','StopButton','PurgeVramButton','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 
 # Use the approved AgentPort lockup itself in the sidebar rather than re-typesetting it.
@@ -2922,6 +2992,7 @@ $SavedProfilesButton.Add_Click({ Show-ProfilesMenu })
 $BrowseModelsButton.Add_Click({ Switch-Page 'Models' })
 $RuntimeOffloadButton.Add_Click({ Offload-Model })
 $RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
+$HarnessUpdateButton.Add_Click({ Update-DeepSeekHarness })
 $StopButton.Add_Click({ Kill-Stack; $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; Set-Log 'Stack stopped.' })
 $PurgeVramButton.Add_Click({ Purge-AgentPortVram })
 $ModelsNInferAction.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
@@ -2958,6 +3029,7 @@ $UninstallTextGenButton.Add_Click({
 if($InstallTextGenButton){ $InstallTextGenButton.Add_Click({ Start-TextGenInstallOnly $false }) }
 if($RepairTextGenButton){ $RepairTextGenButton.Add_Click({ Start-TextGenInstallOnly $true }) }
 if($InstallHarnessButton){ $InstallHarnessButton.Add_Click({ Install-DeepSeekHarness $false }) }
+if($HarnessUpdateButtonSettings){ $HarnessUpdateButtonSettings.Add_Click({ Update-DeepSeekHarness }) }
 if($RepairHarnessButton){ $RepairHarnessButton.Add_Click({ Install-DeepSeekHarness $true }) }
 if($ScanModelsButton){ $ScanModelsButton.Add_Click({ Scan-Models }) }
 $UninstallHarnessButton.Add_Click({
