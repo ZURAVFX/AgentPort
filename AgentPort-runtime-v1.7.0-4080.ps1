@@ -15,7 +15,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.7.6-4080'
+$script:AppVersion = '1.7.7-4080'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -2704,7 +2704,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-              <Grid Margin="0,0,0,8"><TextBlock Text="v1.7.6-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+              <Grid Margin="0,0,0,8"><TextBlock Text="v1.7.7-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -2937,7 +2937,7 @@ if($SmokeTest){
 }
 if($IntegrationTest){
     $Window.Add_ContentRendered({
-        try {Select-AndStartNInfer 24576}catch{Write-Host ('Integration start failed: '+$_.Exception.Message);$Window.Close();return}
+        try {Select-AndStartNInfer 49152}catch{Write-Host ('Integration start failed: '+$_.Exception.Message);$Window.Close();return}
         $script:IntegrationDeadline=(Get-Date).AddSeconds(120)
         $script:IntegrationCheck=[Windows.Threading.DispatcherTimer]::new()
         $script:IntegrationCheck.Interval=[TimeSpan]::FromSeconds(2)

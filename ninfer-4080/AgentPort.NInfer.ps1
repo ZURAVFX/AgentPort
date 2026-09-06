@@ -196,7 +196,22 @@ function Start-AgentPortNInfer {
         $profile=if($context -eq 49152){'maximum 49k context'}else{'fast/reliable 24k context'}
         Set-LaunchPhase 1 'Starting NInfer' ("Loading Qwen3.8 27B min-Q4, $profile, MTP3.") 20
         if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
-        $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
+        try {
+            $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
+        } catch {
+            $startupError=$_.Exception.Message
+            $capacityFailure=$startupError -match 'runtime reservation|capacity|out of memory|CUDA.*memory'
+            if($context -eq 49152 -and $capacityFailure){
+                Set-Log '49k context did not fit in the currently available VRAM. Retrying automatically at 24k.' 'warn'
+                Set-LaunchPhase 1 'Adjusting for available VRAM' '49k did not fit, so AgentPort is retrying with the fast and reliable 24k context.' 24
+                $context=24576
+                $profile='fast/reliable 24k context'
+                $label=@($script:ContextPresets.Keys | Where-Object {$script:ContextPresets[$_] -eq 24576})[0]
+                if($label){$ContextCombo.SelectedItem=$label}
+                Start-Sleep -Milliseconds 500
+                $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
+            } else {throw}
+        }
         $script:PendingModel=$script:NInferState.Model
         $script:PendingContext=$script:NInferState.Context
         $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply READY.'});max_tokens=16;temperature=0;stream=$false}
@@ -214,11 +229,21 @@ function Start-AgentPortNInfer {
         $script:LaunchState='wait_harness'
         $script:LaunchDeadline=(Get-Date).AddSeconds(120)
     } catch {
+        $rawError=$_.Exception.Message
         if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
         $script:LaunchState='idle'
         $PrimaryButton.IsEnabled=$true
-        Set-LaunchPhase 1 'NInfer could not start' $_.Exception.Message 0 'error'
-        Set-Log $_.Exception.Message 'error'
-        [System.Windows.MessageBox]::Show($_.Exception.Message+"`n`nRun Install-NInfer4080.cmd if the engine or artifact is missing. Close any existing local model before switching backends.",'NInfer startup') | Out-Null
+        $friendlyError=if($rawError -match 'runtime reservation|capacity|out of memory|CUDA.*memory'){
+            'NInfer could not reserve enough GPU memory. Close other GPU apps, then try again with 24k context.'
+        } elseif($rawError -match 'test -x|test -s|engine or artifact|control command failed'){
+            'NInfer setup is incomplete. Open Models and choose Repair NInfer, then try again.'
+        } elseif($rawError -match 'Port 5100|already occupied|still running'){
+            'Another local AI backend is still using port 5100. Open Runtimes, stop everything, then try again.'
+        } else {
+            'NInfer could not start. Open Models and choose Repair NInfer, then try again.'
+        }
+        Set-LaunchPhase 1 'NInfer could not start' $friendlyError 0 'error'
+        Set-Log $rawError 'error'
+        [System.Windows.MessageBox]::Show($friendlyError,'NInfer could not start') | Out-Null
     }
 }
