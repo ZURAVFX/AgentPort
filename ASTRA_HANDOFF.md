@@ -14,12 +14,13 @@ Worktree branch: `feature/ninfer-rtx4080`
 
 ## Current commit
 
-`126d5f6` — hardened NInfer lifecycle and added isolated benchmark.
+`cccac05` — hardened NInfer lifecycle, MCP startup handling, and the v1.7.9 release package.
 
 ## Files
 
 - `ninfer-4080/NInfer.Runtime.ps1`: absolute-home WSL launch, exact-PID teardown, API identity check, early error reporting.
 - `ninfer-4080/Benchmark-NInfer.ps1`: NInfer-only benchmark; tests MTP settings without restarting TextGen.
+- `ninfer-4080/AgentPort.Mcp.ps1`: guided ComfyUI/Blender setup and non-fatal optional MCP connections.
 - `AgentPort-runtime-v1.7.0-4080.ps1`: installed runtime snapshot with corrected NInfer path handling and explicit min-Q4 identity.
 
 ## Astra instructions
