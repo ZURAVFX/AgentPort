@@ -15,7 +15,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.7.9-4080'
+$script:AppVersion = '1.8.0-4080'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -1494,14 +1494,16 @@ function Prepare-IsolatedHarnessSkills {
     $backup = Join-Path $agents 'skills.original-before-studio'
     $marker = Join-Path $active '.managed-by-agentport'
     if(-not (Test-Path $agents)){ New-Item -ItemType Directory -Force -Path $agents | Out-Null }
-    if((Test-Path $active) -and -not (Test-Path $marker)){
-        if(-not (Test-Path $backup)){ Move-Item -LiteralPath $active -Destination $backup }
-        else { Remove-Item -LiteralPath $active -Recurse -Force }
+    # Older AgentPort builds replaced Harness's own skill directory. Restore it
+    # once, then only merge the user's explicitly selected skill folders.
+    if((Test-Path $marker) -and (Test-Path $backup)){
+        Remove-Item -LiteralPath $active -Recurse -Force
+        Move-Item -LiteralPath $backup -Destination $active
     }
-    if(Test-Path $active){ Remove-Item -LiteralPath $active -Recurse -Force }
-    New-Item -ItemType Directory -Force -Path $active | Out-Null
-    Get-ChildItem -LiteralPath $source -Force -ErrorAction SilentlyContinue | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $active -Recurse -Force }
-    'Managed by AgentPort. Put Harness-only skills in ~/.dsh/harness_skills.' | Set-Content -LiteralPath $marker -Encoding UTF8
+    if(-not (Test-Path $active)){New-Item -ItemType Directory -Force -Path $active | Out-Null}
+    Get-ChildItem -LiteralPath $source -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
+        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $active $_.Name) -Recurse -Force
+    }
 }
 
 
@@ -1996,7 +1998,7 @@ function Start-Harness {
     Ensure-AgentPortRuntimeDirs
     $root=[string]$script:Config.harness_root
     if(-not (Test-Path -LiteralPath $root)){ New-Item -ItemType Directory -Force -Path $root | Out-Null }
-    if($script:PendingModel -ne 'qwen3.8-27b-minq4'){Prepare-IsolatedHarnessSkills}
+    Prepare-IsolatedHarnessSkills
     $logs = Join-Path ([string]$script:Config.textgen_root) 'logs'
     if(-not (Test-Path $logs)){ New-Item -ItemType Directory -Force -Path $logs | Out-Null }
     $out = Join-Path $logs 'harness.out.log'
@@ -2010,10 +2012,9 @@ function Start-Harness {
     }
     $mcpPatch=Join-Path $script:AppDataDir 'agentport-mcp.patch.json'
     if($script:PendingModel -eq 'qwen3.8-27b-minq4'){
-        # The 24k RTX 4080 profile cannot fit a full MCP tool catalogue in its
-        # prompt. Keep the user's MCP preference intact for TextGen, but omit
-        # those schemas from NInfer so a new Harness chat remains usable.
-        Write-AgentPortMcpOverlay $mcpPatch -NInfer -ForceDisableNInfer | Out-Null
+        # Keep the 24k fast profile lean; the 49k tools profile honours MCPs.
+        if([int]$script:PendingContext -lt 32768){Write-AgentPortMcpOverlay $mcpPatch -NInfer -ForceDisableNInfer | Out-Null}
+        else {Write-AgentPortMcpOverlay $mcpPatch -NInfer | Out-Null}
     } else {Write-AgentPortMcpOverlay $mcpPatch | Out-Null}
     $patchArgs='--patch "'+$mcpPatch+'"'
     if($script:PendingModel -eq 'qwen3.8-27b-minq4' -and $script:NInferHarnessPatch){$patchArgs+=' --patch "'+$script:NInferHarnessPatch+'"'}
@@ -2810,7 +2811,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-              <Grid Margin="0,0,0,8"><TextBlock Text="v1.7.9-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+              <Grid Margin="0,0,0,8"><TextBlock Text="v1.8.0-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -2837,7 +2838,7 @@ function Show-ProfilesMenu {
                     <TextBlock Text="Choose what to run" Foreground="#F3F3F5" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,16"/>
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
                       <StackPanel><TextBlock Text="Model" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,9"/><ComboBox x:Name="ModelCombo"/><Button x:Name="BrowseModelsButton" Content="Manage models" Style="{StaticResource ModernButton}" HorizontalAlignment="Left" Padding="13,7" Margin="0,9,0,0"/></StackPanel>
-                      <StackPanel Grid.Column="2"><TextBlock Text="Context" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,9"/><ComboBox x:Name="ContextCombo"/><TextBlock Text="24k is fastest for NInfer. 49k uses nearly all VRAM." Foreground="#898993" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"/></StackPanel>
+                      <StackPanel Grid.Column="2"><TextBlock Text="Context" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,9"/><ComboBox x:Name="ContextCombo"/><TextBlock Text="24k Fast disables MCP tools. 32k Tools enables MCPs with safer VRAM. 49k Max uses nearly all VRAM." Foreground="#898993" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"/></StackPanel>
                     </Grid>
                     <Expander x:Name="AdvancedSettings" Header="Advanced TextGen settings" Foreground="#BDBDC5" Margin="0,18,0,0" IsExpanded="False">
                       <StackPanel Margin="0,14,0,0">
@@ -2866,9 +2867,9 @@ function Show-ProfilesMenu {
 
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14">
                   <StackPanel>
-                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Runtime health" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="AgentPort-owned services and GPU memory, all in one place." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="HarnessUpdateButton" Content="Update Harness" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="RuntimeOffloadButton" Content="Offload model" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopButton" Content="Stop stack" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Purge VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></StackPanel></Grid>
+                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Runtime health" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="AgentPort-owned services and GPU memory, all in one place." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="RuntimeOffloadButton" Content="Offload model" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Stop &amp; release GPU" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></StackPanel></Grid>
                     <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Used by the current AgentPort stack" Foreground="#777781" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="System RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="-" Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating..." Foreground="#85858F" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border></Grid>
-                    <TextBlock Text="Purge VRAM stops only AgentPort-owned TextGen, Harness and NInfer processes, then checks both API ports are free. It does not kill unrelated GPU applications." Foreground="#9999A3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBlock Text="Stop &amp; release GPU closes AgentPort-owned TextGen, Harness and NInfer processes. It does not close unrelated GPU applications." Foreground="#9999A3" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
                     <TextBox x:Name="LogBox" Height="210" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
                   </StackPanel>
                 </Border>
@@ -2926,7 +2927,7 @@ try {
     }
 } catch {}
 
-$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','RuntimeOffloadButton','StopButton','PurgeVramButton','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','RuntimeOffloadButton','PurgeVramButton','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 
 # Use the approved AgentPort lockup itself in the sidebar rather than re-typesetting it.
@@ -2992,18 +2993,16 @@ $SavedProfilesButton.Add_Click({ Show-ProfilesMenu })
 $BrowseModelsButton.Add_Click({ Switch-Page 'Models' })
 $RuntimeOffloadButton.Add_Click({ Offload-Model })
 $RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
-$HarnessUpdateButton.Add_Click({ Update-DeepSeekHarness })
-$StopButton.Add_Click({ Kill-Stack; $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; Set-Log 'Stack stopped.' })
 $PurgeVramButton.Add_Click({ Purge-AgentPortVram })
 $ModelsNInferAction.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
 $McpManagerButton.Add_Click({ Show-AgentPortMcpManager })
 $InstallLowThinkingButton.Add_Click({
     try {
         $path=Install-AgentPortLowThinkingPreset
-        $LowThinkingStatus.Text='Installed and set as the default. Restart Harness to load it for new chats.'
-        Set-Log 'Zura Low Thinking preset installed as the Harness default.' 'ok'
+        $LowThinkingStatus.Text='Zura Fast is installed and is the default for new chats. Restart Harness to load it.'
+        Set-Log 'Zura Fast preset installed as the Harness default.' 'ok'
         if(Test-Port 3080){
-            $answer=[Windows.MessageBox]::Show('Zura Low Thinking is installed as the default. Restart DeepSeek Harness now so it is loaded?','Zura Low Thinking',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
+            $answer=[Windows.MessageBox]::Show('Zura Fast is installed as the default. Restart DeepSeek Harness now so it is loaded?','Zura Fast',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
             if($answer -eq [Windows.MessageBoxResult]::Yes){Kill-HarnessOnly;Start-Sleep -Milliseconds 700;Start-Harness}
         }
     } catch {$LowThinkingStatus.Text=$_.Exception.Message;Set-Log $_.Exception.Message 'error'}
@@ -3072,4 +3071,13 @@ if($IntegrationTest){
         $script:IntegrationCheck.Start()
     })
 }
+$Window.Add_ContentRendered({
+    if(-not $SmokeTest -and -not $IntegrationTest){
+        $Window.WindowState='Normal'
+        $Window.Topmost=$true
+        [void]$Window.Activate()
+        [void]$Window.Focus()
+        $Window.Topmost=$false
+    }
+})
 [void]$Window.ShowDialog()

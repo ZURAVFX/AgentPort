@@ -119,4 +119,4 @@ At the end, the script reports:
 - Windows AgentPort EXE is built in CI.
 - TextGen defaults now reflect the real RTX 4080 measurements.
 - NInfer setup and the OpenAI-compatible API have completed successfully on the target RTX 4080; the isolated benchmark measured about 77 tok/s with MTP3.
-- Keep the PR in Draft until the packaged `v1.7.9-4080` executable has been smoke-tested on the target Windows installation with any desired MCPs enabled.
+- Keep the PR in Draft until the packaged `v1.8.0-4080` executable has been smoke-tested on the target Windows installation with any desired MCPs enabled.

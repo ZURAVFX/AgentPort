@@ -1,12 +1,12 @@
-# AgentPort 1.7.9: RTX 4080 NInfer
+# AgentPort 1.8.0: RTX 4080 NInfer
 
 1. Extract the release ZIP into a folder.
-2. Open `AgentPort-v1.7.9-4080.exe`.
-3. Choose **Qwen3.8 27B min-Q4 | NInfer RTX 4080**, choose 24k for maximum speed or 49k for maximum context, then press **Start NInfer and open Harness**. AgentPort stops TextGen, loads the matching model, makes NInfer the Harness default and opens Harness automatically.
+2. Open `AgentPort-v1.8.0-4080.exe`.
+3. Choose **Qwen3.8 27B min-Q4 | NInfer RTX 4080**, then choose 24k Fast for maximum speed, 32k Tools for MCP use, or 49k Max for the largest context. Press **Start NInfer and open Harness**. AgentPort stops its previous stack, loads the matching model, makes NInfer the Harness default and opens Harness automatically.
 4. If NInfer is not installed, the same start button offers the one-time setup. Setup and repair are also available under **Models**.
-5. Open **Skills & MCPs** to add Harness skills, choose a folder connection or import standard `mcpServers` JSON. NInfer automatically keeps oversized MCP tool lists out of its 24k fast profile, preserving a usable context; TextGen can use the full tool set.
-6. In **Skills & MCPs**, choose **Install & make default** under **Zura Low Thinking**. This copies the preset to `%USERPROFILE%\.dsh\.agent-presets\zura-low-thinking\agent.cordis.yml`, backs up any existing copy, sets it as the Harness default and keeps Ralph to eight rounds. Restart Harness when prompted; existing chats keep their current preset.
-7. If Harness behaves oddly or **New chat** does not respond, click **Update Harness** on Home. AgentPort checks and caches the latest published Harness package, switches away from an older local checkout without deleting it, and restarts Harness while keeping the selected model running.
+5. Open **Skills & MCPs** to add Harness skills, choose a ready-made MCP connection or import standard `mcpServers` JSON. Skills are instructions; MCPs are callable tools. ComfyUI needs the MCP connection, not a matching skill.
+6. In **Skills & MCPs**, choose **Install / repair** under **Zura Fast**. This installs valid preset metadata, makes it the default for new chats and limits Ralph to eight rounds. Restart Harness when prompted; existing chats keep their current preset.
+7. If Harness behaves oddly or **New chat** does not respond, open **Settings** and choose **Update to latest**. AgentPort refreshes the published Harness package without deleting a local source checkout.
 
 ### Priority MCPs
 
@@ -16,9 +16,9 @@ In **Skills & MCPs → MCP connections**, **Add ComfyUI** creates the local `com
 
 For any other MCP, use **Import an MCP configuration** and paste its standard `mcpServers` JSON. AgentPort also accepts the common `servers` and `serverUrl` variants, validates names and HTTP URLs, allows each connection to be disabled or removed, and stores secrets only in the user's local `.dsh` configuration.
 
-For the RTX 4080 24k NInfer fast profile, oversized MCP tool catalogues are automatically omitted from the NInfer prompt. This prevents the common 26k-token context rejection that makes a new Harness chat appear unresponsive. TextGen remains available when full MCP tool access is required.
+For the RTX 4080 24k Fast profile, MCP tool catalogues are omitted from the prompt. This prevents the common 26k-token context rejection that makes a new Harness chat appear unresponsive. Use 32k Tools for normal ComfyUI or Blender work. Use 49k Max only when Windows has enough spare VRAM; AgentPort automatically falls back to 32k Tools if it does not fit.
 
-NInfer loads the converted stock Qwen3.8 27B min-Q4 artifact. It does not load the Ridge GGUF. The fast profile uses 24,576 context, INT4 KV, concurrency 1 and MTP3. The 49,152-token profile is the largest allocation verified on this RTX 4080 and left approximately 114 MiB free after startup; 65,536 failed to allocate. The NInfer coding profile excludes globally configured MCP clients and background AI title generation by default to reduce prompt size and competing requests. AgentPort-managed MCP tool catalogues are automatically suppressed for the 24k NInfer profile when they would exceed context; use TextGen for full MCP access. Core coding tools remain available.
+NInfer loads the converted stock Qwen3.8 27B min-Q4 artifact. It does not load the Ridge GGUF. All profiles use INT4 KV, concurrency 1 and MTP3. The 32,768-token Tools profile is the practical default for MCP work on a 16 GB card. The 49,152-token profile is the largest verified allocation but left approximately 114 MiB free in the cleanest test; 65,536 failed. TextGen remains the compatibility fallback for arbitrary GGUF models.
 
 This pinned 16 GB Ada fork publishes one practical artifact for this card: Qwen3.8 27B min-Q4. Upstream NInfer lists additional Qwen3.6/3.8 artifacts, but their files are 16.29 to 21.22 GiB before runtime memory and do not fit this verified 16 GB resident profile. AgentPort therefore does not advertise them as compatible downloads.
 
@@ -38,6 +38,6 @@ The real DeepSeek Harness headless profile used AgentPort's settings writer and 
 
 Run `ninfer-4080/Run-AgentPort4080-Benchmark.cmd` for the NInfer-only benchmark. Results are saved after every sample under `ninfer-4080/results`. The old v2 PowerShell entry point redirects to this test by default.
 
-Build the executable from source with `go build -ldflags "-H=windowsgui" -o AgentPort-v1.7.9-4080.exe main.go`. The EXE extracts its bundled scripts into `%LOCALAPPDATA%/AgentPort/v1.7.9-4080`. Startup diagnostics are in that folder's `launcher.log`.
+Build the executable from source with `go build -ldflags "-H=windowsgui" -o AgentPort-v1.8.0-4080.exe main.go`. The EXE extracts its bundled scripts into `%LOCALAPPDATA%/AgentPort/v1.8.0-4080`. Startup diagnostics are in that folder's `launcher.log`.
 
 Work is on `feature/ninfer-rtx4080`; no public push or main-branch change was made. This repository includes an imported installed AgentPort runtime, so review it against the canonical application repository before publishing.

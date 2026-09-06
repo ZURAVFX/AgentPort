@@ -213,8 +213,8 @@ function Start-AgentPortNInfer {
         if((Test-Port 3080) -or (Test-Port 5100)){throw 'A backend started outside AgentPort is still running. Close it, then retry.'}
         $selectedLabel=[string]$ContextCombo.SelectedItem
         $selectedContext=[int]$script:ContextPresets[$selectedLabel]
-        $context=if($selectedContext -ge 49152){49152}else{24576}
-        $profile=if($context -eq 49152){'maximum 49k context'}else{'fast/reliable 24k context'}
+        $context=if($selectedContext -ge 49152){49152}elseif($selectedContext -ge 32768){32768}else{24576}
+        $profile=if($context -eq 49152){'maximum 49k context'}elseif($context -eq 32768){'balanced 32k tools context'}else{'fast/reliable 24k context'}
         Set-LaunchPhase 1 'Starting NInfer' ("Loading Qwen3.8 27B min-Q4, $profile, MTP3.") 20
         if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
         try {
@@ -223,11 +223,11 @@ function Start-AgentPortNInfer {
             $startupError=$_.Exception.Message
             $capacityFailure=$startupError -match 'runtime reservation|capacity|out of memory|CUDA.*memory'
             if($context -eq 49152 -and $capacityFailure){
-                Set-Log '49k context did not fit in the currently available VRAM. Retrying automatically at 24k.' 'warn'
-                Set-LaunchPhase 1 'Adjusting for available VRAM' '49k did not fit, so AgentPort is retrying with the fast and reliable 24k context.' 24
-                $context=24576
-                $profile='fast/reliable 24k context'
-                $label=@($script:ContextPresets.Keys | Where-Object {$script:ContextPresets[$_] -eq 24576})[0]
+                Set-Log '49k context did not fit in available VRAM. Retrying automatically at the 32k Tools profile.' 'warn'
+                Set-LaunchPhase 1 'Adjusting for available VRAM' '49k did not fit, so AgentPort is retrying at 32k with MCP support.' 24
+                $context=32768
+                $profile='balanced 32k tools context'
+                $label=@($script:ContextPresets.Keys | Where-Object {$script:ContextPresets[$_] -eq 32768})[0]
                 if($label){$ContextCombo.SelectedItem=$label}
                 Start-Sleep -Milliseconds 500
                 $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
@@ -237,7 +237,8 @@ function Start-AgentPortNInfer {
         $script:PendingContext=$script:NInferState.Context
         $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply READY.'});max_tokens=16;temperature=0;stream=$false}
         $null=Invoke-TextGenApi '/v1/chat/completions' 'POST' $body 60
-        Update-NInferHarnessSettings $script:PendingContext 4096
+        $harnessMaxTokens=if($script:PendingContext -ge 49152){8192}else{4096}
+        Update-NInferHarnessSettings $script:PendingContext $harnessMaxTokens
         $script:Config.last_model=$script:PendingModel
         $script:Config.active_model=$script:PendingModel
         $script:Config.active_context_tokens=$script:PendingContext
