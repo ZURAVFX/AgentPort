@@ -2,11 +2,17 @@
 function Stop-AgentPortProcess {
     param($Process)
     if(-not $Process){return}
-    $Process.Refresh()
-    if($Process.HasExited){return}
-    $current=Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
-    if($current -and $current.StartTime -eq $Process.StartTime){
-        & taskkill.exe /PID $Process.Id /T /F | Out-Null
+    try {
+        $Process.Refresh()
+        if($Process.HasExited){return}
+        $current=Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
+        if($current -and $current.StartTime -eq $Process.StartTime){
+            $Process.Kill()
+            try{$Process.WaitForExit(5000)|Out-Null}catch{}
+        }
+    } catch {
+        # A process can disappear, or Windows can revoke its query handle,
+        # between the refresh and stop. The port-owned child is handled below.
     }
 }
 
@@ -94,21 +100,29 @@ function Refresh-NInferControls {
 function Update-BackendSelectionUi {
     $selected=Get-SelectedModel
     $ninfer=($selected -and $selected.Source -eq 'NInfer')
-    foreach($control in @($CacheCombo,$OffloadCombo,$SpecCombo)){if($control){$control.IsEnabled=-not $ninfer}}
-    if($AdvancedSettings){$AdvancedSettings.IsEnabled=-not $ninfer}
+    $team=($selected -and $selected.Source -eq 'Team')
+    foreach($control in @($CacheCombo,$OffloadCombo,$SpecCombo)){if($control){$control.IsEnabled=-not ($ninfer -or $team)}}
+    if($AdvancedSettings){$AdvancedSettings.IsEnabled=-not ($ninfer -or $team)}
+    if($ContextCombo){$ContextCombo.IsEnabled=-not $team}
+    if($team){
+        $ContextCombo.SelectedItem='48k (49,152 tokens)'
+        $PrimaryButton.Content=if($selected.Installed){'Start recommended local agent'}else{'Download and start recommended agent'}
+        $StatusText.Text='Qwen3-Coder, 48k context and action-first filesystem, ComfyUI and Blender tools.'
+        return
+    }
     if($ninfer){
         $PrimaryButton.Content='Start NInfer and open Harness'
-        $StatusText.Text='NInfer selected. Start will stop AgentPort-owned TextGen, Harness and older NInfer instances before loading the fast profile.'
+        $StatusText.Text='NInfer fast chat selected. Use the recommended 48k model instead for filesystem, ComfyUI or Blender tools.'
     } else {
-        $PrimaryButton.Content='Start TextGen and open Harness'
-        $StatusText.Text='The selected GGUF will use TextGen with DeepSeek Harness.'
+        $PrimaryButton.Content='Start selected GGUF'
+        $StatusText.Text='This existing model was discovered locally but has not passed AgentPort creative-tool verification.'
     }
 }
 
 function Select-AndStartNInfer {
-    param([int]$Context=24576)
+    param([int]$Context=49152)
     if(-not (Test-AgentPortNInferInstalled)){
-        $answer=[Windows.MessageBox]::Show("NInfer needs a one-time setup and its compatible model (about 15.8 GB).`n`nAgentPort will install it, switch away from TextGen and open DeepSeek Harness with NInfer selected.`n`nContinue?",'Set up NInfer',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
+        $answer=[Windows.MessageBox]::Show("NInfer needs a one-time setup and its compatible model (about 15.8 GB).`n`nAgentPort will install it and open DeepSeek Harness with NInfer selected.`n`nContinue?",'Set up NInfer',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
         if($answer -ne [Windows.MessageBoxResult]::Yes){return}
         Install-AgentPortNInfer $false
         if(-not (Test-AgentPortNInferInstalled)){return}
@@ -192,6 +206,12 @@ function Update-NInferHarnessSettings {
 function New-NInferHarnessPatch {
     param([string]$Path,[string]$SettingsPath='')
     $lines=@("- id: session-title-llm`n  disabled: true")
+    # The 16 GB NInfer artifact has a practical 24k window. Harness's built-in
+    # tool schemas can exceed it, so this mode is reliable fast chat. The 48k
+    # managed GGUF backend remains the agent/MCP path.
+    foreach($id in @('tool-bash','tool-pwsh','tool-fs','tool-fs-search','tool-jobs','skill-filesystem','tool-skill','command-goal','tool-goal','planning','delegation','tool-ask-user','tool-todo','tool-web')){
+        $lines+="- id: $id`n  disabled: true"
+    }
     if($SettingsPath){$lines+= "- id: settings`n  config:`n    path: '"+$SettingsPath.Replace('\','/').Replace("'","''")+"'"}
     $globalPatch=Join-Path $env:USERPROFILE '.dsh\cordis.patch.yml'
     if(Test-Path $globalPatch){
@@ -213,26 +233,26 @@ function Start-AgentPortNInfer {
         if((Test-Port 3080) -or (Test-Port 5100)){throw 'A backend started outside AgentPort is still running. Close it, then retry.'}
         $selectedLabel=[string]$ContextCombo.SelectedItem
         $selectedContext=[int]$script:ContextPresets[$selectedLabel]
-        $context=if($selectedContext -ge 49152){49152}elseif($selectedContext -ge 32768){32768}else{24576}
+                $context=if($selectedContext -ge 49152){49152}elseif($selectedContext -ge 32768){32768}else{24576}
         $profile=if($context -eq 49152){'maximum 49k context'}elseif($context -eq 32768){'balanced 32k tools context'}else{'fast/reliable 24k context'}
         Set-LaunchPhase 1 'Starting NInfer' ("Loading Qwen3.8 27B min-Q4, $profile, MTP3.") 20
         if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
-        try {
-            $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
-        } catch {
-            $startupError=$_.Exception.Message
-            $capacityFailure=$startupError -match 'runtime reservation|capacity|out of memory|CUDA.*memory'
-            if($context -eq 49152 -and $capacityFailure){
-                Set-Log '49k context did not fit in available VRAM. Retrying automatically at the 32k Tools profile.' 'warn'
-                Set-LaunchPhase 1 'Adjusting for available VRAM' '49k did not fit, so AgentPort is retrying at 32k with MCP support.' 24
-                $context=32768
-                $profile='balanced 32k tools context'
-                $label=@($script:ContextPresets.Keys | Where-Object {$script:ContextPresets[$_] -eq 32768})[0]
-                if($label){$ContextCombo.SelectedItem=$label}
-                Start-Sleep -Milliseconds 500
+        $attempts=@($context,32768,24576,16384)|Where-Object {$_ -le $context}|Select-Object -Unique
+        $lastCapacityError=''
+        foreach($candidate in $attempts){
+            try{
+                $context=[int]$candidate
                 $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
-            } else {throw}
+                break
+            }catch{
+                $lastCapacityError=$_.Exception.Message
+                if($lastCapacityError -notmatch 'runtime reservation|capacity|out of memory|CUDA.*memory'){throw}
+                Set-Log ("NInfer context $context did not fit. Retrying the next stable fast-chat size.") 'warn'
+                Set-LaunchPhase 1 'Adjusting for available VRAM' 'Reducing NInfer chat context to fit the current free VRAM.' 24
+                Start-Sleep -Milliseconds 500
+            }
         }
+        if(-not $script:NInferState){throw $lastCapacityError}
         $script:PendingModel=$script:NInferState.Model
         $script:PendingContext=$script:NInferState.Context
         $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply READY.'});max_tokens=16;temperature=0;stream=$false}
@@ -245,7 +265,7 @@ function Start-AgentPortNInfer {
         $script:Config.active_offload_mode='NInfer MTP3 (full GPU)'
         Save-Config
         Set-Log ("NInfer verified | stock Qwen3.8 27B min-Q4 | $context context | INT4 KV | MTP3") 'ok'
-        Set-LaunchPhase 6 'Starting Harness' 'NInfer completion verified. Connecting Harness.' 92
+        Set-LaunchPhase 6 'Starting fast chat' 'NInfer completion verified. Harness tools are disabled in this memory-limited mode.' 92
         $script:NInferHarnessPatch=New-NInferHarnessPatch (Join-Path $script:NInferState.LogDirectory 'coding.patch.yml')
         Start-Harness
         $script:LaunchState='wait_harness'
@@ -255,14 +275,14 @@ function Start-AgentPortNInfer {
         if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
         $script:LaunchState='idle'
         $PrimaryButton.IsEnabled=$true
-        $friendlyError=if($rawError -match 'runtime reservation|capacity|out of memory|CUDA.*memory'){
-            $freeMatch=[regex]::Match($rawError,'(?<free>\d+)\s*MiB is free')
-            if($freeMatch.Success){
-                $freeMiB=[int]$freeMatch.Groups['free'].Value
-                "NInfer needs about 14.6 GiB of free GPU memory, but only $([math]::Round($freeMiB/1024,1)) GiB is free. Stop TextGen, Harness, ComfyUI, Blender, or another GPU app, then retry the 24k profile."
-            } else {
-                'NInfer could not reserve enough GPU memory for this profile. Stop TextGen, Harness, ComfyUI, Blender, or another GPU app, then retry the 24k profile.'
-            }
+            $friendlyError=if($rawError -match 'runtime reservation|capacity|out of memory|CUDA.*memory'){
+                $freeMatch=[regex]::Match($rawError,'(?<free>\d+)\s*MiB is free')
+                if($freeMatch.Success){
+                    $freeMiB=[int]$freeMatch.Groups['free'].Value
+                    "NInfer needs about 14.6 GiB of free GPU memory, but only $([math]::Round($freeMiB/1024,1)) GiB is free. Stop the current backend, ComfyUI, Blender, or another GPU app, then retry."
+                } else {
+                    'NInfer could not reserve enough GPU memory for this profile. Stop the current backend, ComfyUI, Blender, or another GPU app, then retry.'
+                }
         } elseif($rawError -match 'test -x|test -s|engine or artifact|control command failed'){
             'NInfer setup is incomplete. Open Models and choose Repair NInfer, then try again.'
         } elseif($rawError -match 'Port 5100|already occupied|still running'){
