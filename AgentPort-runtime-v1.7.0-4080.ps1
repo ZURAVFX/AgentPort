@@ -9,13 +9,15 @@ using System.Runtime.InteropServices;
 public static class AgentPortShellIdentity {
     [DllImport("shell32.dll", SetLastError=true)]
     public static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appID);
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
 }
 "@
 [void][AgentPortShellIdentity]::SetCurrentProcessExplicitAppUserModelID('ZURAVFX.AgentPort')
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.4'
+$script:AppVersion = '2.0.5'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -1303,8 +1305,27 @@ function Ensure-AppIcon {
         }
     } catch {}
 }
+function Register-AgentPortTaskbarIdentity {
+    try {
+        $appId='ZURAVFX.AgentPort'
+        $key='HKCU:\Software\Classes\AppUserModelId\'+$appId
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'DisplayName' -Value 'AgentPort' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'IconUri' -Value $script:IconPath -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'RelaunchDisplayNameResource' -Value 'AgentPort' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'RelaunchIconResource' -Value $script:IconPath -PropertyType String -Force | Out-Null
+        $self=Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID) -ErrorAction Stop
+        $parent=Get-CimInstance Win32_Process -Filter ('ProcessId='+$self.ParentProcessId) -ErrorAction Stop
+        if($parent.ExecutablePath -and [IO.Path]::GetExtension([string]$parent.ExecutablePath) -eq '.exe'){
+            New-ItemProperty -Path $key -Name 'RelaunchCommand' -Value ('"'+[string]$parent.ExecutablePath+'"') -PropertyType String -Force | Out-Null
+        }
+        [void][AgentPortShellIdentity]::SetCurrentProcessExplicitAppUserModelID($appId)
+        [AgentPortShellIdentity]::SHChangeNotify(0x08000000,0x1000,[IntPtr]::Zero,[IntPtr]::Zero)
+    } catch {}
+}
 Write-Host 'AgentPort: preparing icon'
 Ensure-AppIcon
+Register-AgentPortTaskbarIdentity
 
 function Test-Port([int]$Port){
     $client = New-Object System.Net.Sockets.TcpClient
@@ -3093,7 +3114,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.4" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.5" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
