@@ -17,6 +17,7 @@ public static class AgentPortShellIdentity {
 $ErrorActionPreference = 'Stop'
 $script:AppVersion = '1.7.5-4080'
 $script:AgentPortRoot = $PSScriptRoot
+$script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.NInfer.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Mcp.ps1')
@@ -1990,6 +1991,16 @@ function Start-Harness {
     $script:HarnessProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
 }
 
+function Get-HarnessStartupUrl {
+    $out=Join-Path ([string]$script:Config.textgen_root) 'logs\harness.out.log'
+    if(-not (Test-Path -LiteralPath $out)){return ''}
+    $text=Get-Content -LiteralPath $out -Raw -ErrorAction SilentlyContinue
+    if([string]::IsNullOrWhiteSpace([string]$text)){return ''}
+    $match=[regex]::Match([string]$text,'(?m)^dsh web:\s+(http://127\.0\.0\.1:3080/\?token=[A-Za-z0-9_-]+)\s*$')
+    if($match.Success){return $match.Groups[1].Value}
+    return ''
+}
+
 function Set-Log([string]$Text,[string]$Kind='normal'){
     $time = Get-Date -Format 'HH:mm:ss'
     $prefix = if($Kind -eq 'error'){'ERROR'} elseif($Kind -eq 'ok'){'OK'} else {'INFO'}
@@ -2483,13 +2494,21 @@ function Poll-Launch {
             return
         }
         if(Test-Port 3080){
+            $startupUrl=''
+            if($script:OpenHarnessWhenReady){
+                $startupUrl=Get-HarnessStartupUrl
+                if(-not $startupUrl){
+                    $LaunchDetailText.Text='Harness is online. Waiting for its secure browser link...'
+                    return
+                }
+            }
             $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply / Switch'
             $isNInfer=($script:PendingModel -eq 'qwen3.8-27b-minq4')
             $backend=if($isNInfer){'NInfer RTX 4080'}else{'TextGen'}
             Set-LaunchPhase 7 'Ready' "$backend, the selected model and Harness are synchronised." 100 'ok'
-            Set-Log "$backend + Harness are synchronised and ready. Opening Harness with the selected model." 'ok'
+            Set-Log "$backend + Harness are synchronised and ready." 'ok'
             Update-BackendSelectionUi
-            Start-Process 'http://127.0.0.1:3080'
+            if($script:OpenHarnessWhenReady){Start-Process $startupUrl}
         }
     }
 }
