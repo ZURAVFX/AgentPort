@@ -1502,7 +1502,14 @@ function Prepare-IsolatedHarnessSkills {
     }
     if(-not (Test-Path $active)){New-Item -ItemType Directory -Force -Path $active | Out-Null}
     Get-ChildItem -LiteralPath $source -Directory -Force -ErrorAction SilentlyContinue | ForEach-Object {
-        Copy-Item -LiteralPath $_.FullName -Destination (Join-Path $active $_.Name) -Recurse -Force
+        $destination=Join-Path $active $_.Name
+        $skillMarker=Join-Path $destination '.managed-by-agentport'
+        if(Test-Path $destination){
+            if(Test-Path $skillMarker){Remove-Item -LiteralPath $destination -Recurse -Force}
+            else {return}
+        }
+        Copy-Item -LiteralPath $_.FullName -Destination $destination -Recurse -Force
+        'Copied from ~/.dsh/harness_skills by AgentPort.' | Set-Content -LiteralPath (Join-Path $destination '.managed-by-agentport') -Encoding UTF8
     }
 }
 
