@@ -3,7 +3,8 @@ param(
     [int]$Context = 49152,
     [int]$MaxTokens = 256,
     [string]$Distro = 'Ubuntu-24.04',
-    [switch]$SkipNInfer
+    [switch]$SkipNInfer,
+    [switch]$IncludeTextGen
 )
 
 $ErrorActionPreference = 'Stop'
@@ -181,14 +182,17 @@ Write-Host 'AgentPort RTX 4080 benchmark v2' -ForegroundColor Cyan
 Write-Host ('Model:   {0}' -f $model)
 Write-Host ('Context: {0:N0} | KV: q4_0 | TextGen fit target: 768 MiB | Output cap: {1}' -f $Context,$MaxTokens)
 Write-Host 'Fresh suite: 3 different tasks. Repetitive suite: 3 related agent-plan tasks.'
+Write-Host 'TextGen is omitted by default because its baseline has already been measured extensively.'
+Write-Host 'Use -IncludeTextGen only for an explicit regression comparison.'
 Write-Host 'Native llama.cpp MTP4/MTP6 are omitted because prior 4080 measurements were decisively slower.'
 
-$modes=@(
-    [pscustomobject]@{Backend='TextGen';Mode='Off'},
-    [pscustomobject]@{Backend='TextGen';Mode='NGram Conservative'},
-    [pscustomobject]@{Backend='TextGen';Mode='NGram Medium'},
-    [pscustomobject]@{Backend='TextGen';Mode='NGram Aggressive'}
-)
+$modes=@()
+if($IncludeTextGen){
+    $modes += [pscustomobject]@{Backend='TextGen';Mode='Off'}
+    $modes += [pscustomobject]@{Backend='TextGen';Mode='NGram Conservative'}
+    $modes += [pscustomobject]@{Backend='TextGen';Mode='NGram Medium'}
+    $modes += [pscustomobject]@{Backend='TextGen';Mode='NGram Aggressive'}
+}
 if($ninferReady){$modes += [pscustomobject]@{Backend='NInfer';Mode='MTP3 min-Q4'}}
 $results=@()
 try{
@@ -197,8 +201,10 @@ try{
         $results += Invoke-Suite $m.Backend $m.Mode 'RepetitiveAgent' $RepetitivePrompts
     }
 }finally{
-    Write-Host "`nRestoring original TextGen flags/backend..." -ForegroundColor DarkGray
-    try{ [IO.File]::WriteAllText($flagsFile,$originalFlags,([Text.UTF8Encoding]::new($false))); Stop-LocalBackend; Start-TextGenBackend; Write-Host 'Restored.' -ForegroundColor Green }catch{ Write-Warning 'Original flags were restored, but TextGen restart failed. Click Apply / Switch in AgentPort.' }
+    if($IncludeTextGen){
+        Write-Host "`nRestoring original TextGen flags/backend..." -ForegroundColor DarkGray
+        try{ [IO.File]::WriteAllText($flagsFile,$originalFlags,([Text.UTF8Encoding]::new($false))); Stop-LocalBackend; Start-TextGenBackend; Write-Host 'Restored.' -ForegroundColor Green }catch{ Write-Warning 'Original flags were restored, but TextGen restart failed. Click Apply / Switch in AgentPort.' }
+    }
 }
 
 Write-Host "`n================ BENCHMARK V2 RESULTS ================" -ForegroundColor Cyan
