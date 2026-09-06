@@ -15,7 +15,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '1.7.5-4080'
+$script:AppVersion = '1.7.6-4080'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -2044,12 +2044,9 @@ function Get-SelectedModel {
 function Update-MemoryFit {
     $m = Get-SelectedModel
     if($null -eq $m){
-        foreach($bar in @($VramBar,$RamBar,$HomeVramBar,$HomeRamBar)){ if($null -ne $bar){ $bar.Value=0 } }
+        foreach($bar in @($VramBar,$RamBar)){ if($null -ne $bar){ $bar.Value=0 } }
         $MemorySummary.Text='Install or select a GGUF model to estimate memory use.'
-        $HomeMemorySummary.Text='Install or select a GGUF model to estimate memory use.'
-        $HomeFitStatus.Text='No model selected'
-        $HomeFitStatus.Foreground='#8A8A94'
-        $VramText.Text='-'; $RamText.Text='-'; $HomeVramText.Text='-'; $HomeRamText.Text='-'
+        $VramText.Text='-'; $RamText.Text='-'
         return
     }
 
@@ -2094,11 +2091,9 @@ function Update-MemoryFit {
     $vPct = [math]::Min(100, ($vUsed/[math]::Max(0.1,$vramTotal))*100)
     $rPct = [math]::Min(100, ($ramUsedEstimate/[math]::Max(0.1,$ramTotal))*100)
 
-    $VramBar.Value=$vPct; $RamBar.Value=$rPct; $HomeVramBar.Value=$vPct; $HomeRamBar.Value=$rPct
+    $VramBar.Value=$vPct; $RamBar.Value=$rPct
     $VramText.Text = ('{0:N1} / {1:N1} GB' -f $vUsed,$vramTotal)
     $RamText.Text = ('{0:N1} GB model spill | {1:N1} GB system' -f $spill,$ramTotal)
-    $HomeVramText.Text = ('{0:N1} / {1:N1} GB' -f $vUsed,$vramTotal)
-    $HomeRamText.Text = if($spill -gt 0){ ('+{0:N1} GB spill' -f $spill) } else { 'No spill' }
 
     $availableCombined = $gpuTarget + [math]::Max(0,$ramTotal-$baseSystem)
     if($offload -eq 'CPU / RAM Only'){
@@ -2128,19 +2123,16 @@ function Update-MemoryFit {
 
     $MemorySummary.Text=$detail
     $MemorySummary.Foreground=$color
-    $HomeFitStatus.Text=$tier
-    $HomeFitStatus.Foreground=$color
-    $HomeMemorySummary.Text=$detail
-    $HomeMemorySummary.Foreground='#8F9099'
 }
 function Refresh-ModelManager {
     $ModelListPanel.Children.Clear()
-    if($script:Models.Count -eq 0){
+    $managed=@($script:Models | Where-Object {$_.Source -ne 'NInfer'})
+    if($managed.Count -eq 0){
         $t = New-Object System.Windows.Controls.TextBlock
         $t.Text='No GGUF models found in your models folder.'; $t.Foreground='#8A8A9A'; $t.Margin='4,8,4,8'
         [void]$ModelListPanel.Children.Add($t); return
     }
-    foreach($m in $script:Models){
+    foreach($m in $managed){
         $row = New-Object System.Windows.Controls.Border
         $row.CornerRadius='18'; $row.Background='#0F0F16'; $row.BorderBrush='#1D1D29'; $row.BorderThickness='1'; $row.Padding='14'; $row.Margin='0,0,0,10'
         $grid = New-Object System.Windows.Controls.Grid
@@ -2149,25 +2141,17 @@ function Refresh-ModelManager {
         $stack = New-Object System.Windows.Controls.StackPanel
         $name = New-Object System.Windows.Controls.TextBlock; $name.Text=$m.Name; $name.Foreground='White'; $name.FontWeight='SemiBold'; $name.FontSize=14
         $meta = New-Object System.Windows.Controls.TextBlock
-        if($m.Source -eq 'NInfer'){
-            $meta.Text=if($m.Installed){'NInfer RTX 4080 provider | installed | 24k fast / 49k maximum'}else{'NInfer RTX 4080 provider | one-time setup required'}
-        } else {$meta.Text=((Format-Size $m.SizeBytes)+'   |   '+$m.RelPath)}
+        $meta.Text=((Format-Size $m.SizeBytes)+'   |   '+$m.RelPath)
         $meta.Foreground='#777788'; $meta.FontSize=11; $meta.Margin='0,4,8,0'
         [void]$stack.Children.Add($name); [void]$stack.Children.Add($meta)
         [System.Windows.Controls.Grid]::SetColumn($stack,0); [void]$grid.Children.Add($stack)
         $btn = New-Object System.Windows.Controls.Button; $btn.Padding='14,8'; $btn.Margin='12,0,0,0'
-        if($m.Source -eq 'NInfer'){
-            $btn.Content=if($m.Installed){'Switch to NInfer'}else{'Set up and use'}
-            $btn.Style=$Window.FindResource('PrimaryButtonStyle'); $btn.FontSize=13
-            $btn.Add_Click({ Select-AndStartNInfer 24576 })
-        } else {
-            $btn.Content='Delete'; $btn.Tag=$m.FullPath; $btn.Style=$Window.FindResource('DangerButton')
-            $btn.Add_Click({ param($s,$e)
-                $path=[string]$s.Tag
-                $answer=[System.Windows.MessageBox]::Show("Permanently delete this model?`n`n$path",'Delete model',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
-                if($answer -eq [System.Windows.MessageBoxResult]::Yes){ try{ Remove-Item -LiteralPath $path -Force; Set-Log 'Model deleted.' 'ok'; Refresh-Models }catch{ [System.Windows.MessageBox]::Show($_.Exception.Message,'Delete failed') } }
-            })
-        }
+        $btn.Content='Delete'; $btn.Tag=$m.FullPath; $btn.Style=$Window.FindResource('DangerButton')
+        $btn.Add_Click({ param($s,$e)
+            $path=[string]$s.Tag
+            $answer=[System.Windows.MessageBox]::Show("Permanently delete this model?`n`n$path",'Delete model',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
+            if($answer -eq [System.Windows.MessageBoxResult]::Yes){ try{ Remove-Item -LiteralPath $path -Force; Set-Log 'Model deleted.' 'ok'; Refresh-Models }catch{ [System.Windows.MessageBox]::Show($_.Exception.Message,'Delete failed') } }
+        })
         [System.Windows.Controls.Grid]::SetColumn($btn,1); [void]$grid.Children.Add($btn)
         $row.Child=$grid; [void]$ModelListPanel.Children.Add($row)
     }
@@ -2708,7 +2692,7 @@ function Show-ProfilesMenu {
               <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2302;" FontSize="20" Width="32"/><TextBlock Text="Home" VerticalAlignment="Center"/></StackPanel></Button>
               <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x25C7;" FontSize="19" Width="32"/><TextBlock Text="Models" VerticalAlignment="Center"/></StackPanel></Button>
               <Button x:Name="NavRuntimes" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&gt;_" FontFamily="Cascadia Mono, Consolas" FontSize="15" Width="32"/><TextBlock Text="Runtimes" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2261;" FontSize="22" Width="32"/><TextBlock Text="Skills" VerticalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2261;" FontSize="22" Width="32"/><TextBlock Text="Skills &amp; MCPs" VerticalAlignment="Center"/></StackPanel></Button>
               <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2699;" FontSize="19" Width="32"/><TextBlock Text="Settings" VerticalAlignment="Center"/></StackPanel></Button>
             </StackPanel>
 
@@ -2720,8 +2704,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-              <Button x:Name="SidebarOffloadButton" Style="{StaticResource ModernButton}" Margin="0,0,0,64"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x21E7;" FontSize="17" Width="28"/><TextBlock Text="Offload Model"/></StackPanel></Button>
-              <Grid><TextBlock Text="v1.7.5-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+              <Grid Margin="0,0,0,8"><TextBlock Text="v1.7.6-4080" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -2730,7 +2713,7 @@ function Show-ProfilesMenu {
         <Grid Grid.Column="2" Margin="36,0,36,14">
           <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
           <Grid Grid.Row="0" Margin="8,8,0,9">
-            <StackPanel><StackPanel Orientation="Horizontal"><TextBlock Text="Hi, Elliot" Foreground="#F6F6F7" FontSize="29" FontWeight="SemiBold"/><TextBlock Text="&#x1F44B;" FontFamily="Segoe UI Emoji" FontSize="25" Margin="9,0,0,0"/></StackPanel><TextBlock Text="Ready to run your local models." Foreground="#A0A0A8" FontSize="14" Margin="0,3,0,0"/></StackPanel>
+            <StackPanel><TextBlock Text="Local AI, ready" Foreground="#F6F6F7" FontSize="29" FontWeight="SemiBold"/><TextBlock Text="Choose a model, then start DeepSeek Harness." Foreground="#A0A0A8" FontSize="14" Margin="0,3,0,0"/></StackPanel>
           </Grid>
 
           <Grid Grid.Row="1">
@@ -2743,52 +2726,28 @@ function Show-ProfilesMenu {
                   </Grid>
                 </Border>
 
-                <Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="20,14" Margin="0,0,0,10">
-                  <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                    <StackPanel><TextBlock Text="NInfer RTX 4080" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="One click installs if needed, loads the compatible model, replaces TextGen and opens Harness with NInfer selected. Fast mode: 24k context, MTP3, about 77 tok/s." Foreground="#9BC9A8" FontSize="11" Margin="0,4,10,0" TextWrapping="Wrap"/></StackPanel>
-                    <Button x:Name="UseNInferButton" Grid.Column="1" Content="Switch to NInfer" Style="{StaticResource PrimaryButtonStyle}" FontSize="15" Padding="18,11" Margin="6,0"/>
-                    <Button x:Name="UseNInferLongButton" Grid.Column="2" Content="49k maximum" Style="{StaticResource ModernButton}" Padding="14,9" Margin="6,0" ToolTip="Uses nearly all 16 GB of VRAM"/>
-                    <Button x:Name="InstallNInferButton" Grid.Column="3" Content="Repair" Style="{StaticResource ModernButton}" Padding="14,9" Margin="6,0,0,0"/>
-                  </Grid>
-                </Border>
-
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="28,15" Margin="0,0,0,10">
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="28,20" Margin="0,0,0,12">
                   <StackPanel>
-                    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="30"/><ColumnDefinition/><ColumnDefinition Width="30"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                      <StackPanel><TextBlock Text="Model" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,10"/><ComboBox x:Name="ModelCombo"/><Button x:Name="BrowseModelsButton" Content="Browse Models" Style="{StaticResource ModernButton}" Margin="0,8,0,0"/></StackPanel>
-                      <StackPanel Grid.Column="2"><TextBlock Text="Context Length" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,10"/><ComboBox x:Name="ContextCombo"/><TextBlock Text="Auto-detects your VRAM" Foreground="#898993" FontSize="11" Margin="0,8,0,0"/></StackPanel>
-                      <StackPanel Grid.Column="4"><TextBlock Text="GPU Offload" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,10"/><ComboBox x:Name="OffloadCombo"/><TextBlock Text="Best balance of speed &amp; memory" Foreground="#898993" FontSize="11" Margin="0,8,0,0"/></StackPanel>
+                    <TextBlock Text="Choose what to run" Foreground="#F3F3F5" FontSize="18" FontWeight="SemiBold" Margin="0,0,0,16"/>
+                    <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                      <StackPanel><TextBlock Text="Model" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,9"/><ComboBox x:Name="ModelCombo"/><Button x:Name="BrowseModelsButton" Content="Manage models" Style="{StaticResource ModernButton}" HorizontalAlignment="Left" Padding="13,7" Margin="0,9,0,0"/></StackPanel>
+                      <StackPanel Grid.Column="2"><TextBlock Text="Context" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,9"/><ComboBox x:Name="ContextCombo"/><TextBlock Text="24k is fastest for NInfer. 49k uses nearly all VRAM." Foreground="#898993" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"/></StackPanel>
                     </Grid>
-                    <Border Height="1" Background="#20262E" Margin="0,12,0,12"/>
-                    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="30"/><ColumnDefinition/><ColumnDefinition Width="30"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                      <StackPanel><TextBlock Text="KV Cache" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,10"/><ComboBox x:Name="CacheCombo"/><TextBlock Text="Let system optimise" Foreground="#898993" FontSize="11" Margin="0,8,0,0"/></StackPanel>
-                      <StackPanel Grid.Column="2"><TextBlock Text="Speculative Decoding" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,10"/><ComboBox x:Name="SpecCombo"/><TextBlock Text="Balance speed and stability" Foreground="#898993" FontSize="11" Margin="0,8,0,0"/></StackPanel>
-                      <StackPanel Grid.Column="4"><TextBlock Text="Max New Tokens" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,10"/><ComboBox x:Name="MaxTokensCombo"/><TextBlock Text="For responses &amp; generations" Foreground="#898993" FontSize="11" Margin="0,8,0,0"/></StackPanel>
-                    </Grid>
+                    <Expander x:Name="AdvancedSettings" Header="Advanced TextGen settings" Foreground="#BDBDC5" Margin="0,18,0,0" IsExpanded="False">
+                      <StackPanel Margin="0,14,0,0">
+                        <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                          <StackPanel><TextBlock Text="GPU offload" Foreground="#BDBDC5" FontSize="11" Margin="0,0,0,7"/><ComboBox x:Name="OffloadCombo"/></StackPanel>
+                          <StackPanel Grid.Column="2"><TextBlock Text="KV cache" Foreground="#BDBDC5" FontSize="11" Margin="0,0,0,7"/><ComboBox x:Name="CacheCombo"/></StackPanel>
+                          <StackPanel Grid.Column="4"><TextBlock Text="Speculative decoding" Foreground="#BDBDC5" FontSize="11" Margin="0,0,0,7"/><ComboBox x:Name="SpecCombo"/></StackPanel>
+                          <StackPanel Grid.Column="6"><TextBlock Text="Maximum response" Foreground="#BDBDC5" FontSize="11" Margin="0,0,0,7"/><ComboBox x:Name="MaxTokensCombo"/></StackPanel>
+                        </Grid>
+                        <Button x:Name="SavedProfilesButton" Content="Saved profiles" Style="{StaticResource ModernButton}" HorizontalAlignment="Left" Padding="13,7" Margin="0,12,0,0"/>
+                      </StackPanel>
+                    </Expander>
                   </StackPanel>
                 </Border>
 
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="20,12" Margin="0,0,0,10">
-                  <Grid>
-                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/><ColumnDefinition Width="20"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
-                    <StackPanel Grid.Column="0">
-                      <Grid><TextBlock Text="GPU VRAM fit" Foreground="#BDBDC5" FontSize="11"/><TextBlock x:Name="HomeVramText" Text="-" Foreground="#F3F3F5" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Right"/></Grid>
-                      <ProgressBar x:Name="HomeVramBar" Maximum="100" Margin="0,9,0,0"/>
-                    </StackPanel>
-                    <StackPanel Grid.Column="2">
-                      <Grid><TextBlock Text="System RAM" Foreground="#BDBDC5" FontSize="11"/><TextBlock x:Name="HomeRamText" Text="-" Foreground="#F3F3F5" FontSize="11" FontWeight="SemiBold" HorizontalAlignment="Right"/></Grid>
-                      <ProgressBar x:Name="HomeRamBar" Maximum="100" Margin="0,9,0,0"/>
-                    </StackPanel>
-                    <Border Grid.Column="4" Background="#0A0E13" BorderBrush="#262D36" BorderThickness="1" CornerRadius="12" Padding="13,10">
-                      <StackPanel>
-                        <TextBlock x:Name="HomeFitStatus" Text="Checking hardware fit..." Foreground="#D7D7DC" FontSize="12" FontWeight="SemiBold"/>
-                        <TextBlock x:Name="HomeMemorySummary" Text="Select a model and context." Foreground="#85858F" FontSize="10" Margin="0,3,0,0" TextWrapping="Wrap"/>
-                      </StackPanel>
-                    </Border>
-                  </Grid>
-                </Border>
-
-                <Grid Margin="0,0,0,7"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="22"/><ColumnDefinition Width="250"/></Grid.ColumnDefinitions><Button x:Name="PrimaryButton" Grid.Column="0" Content="Apply &amp; Start" Style="{StaticResource PrimaryButtonStyle}"/><Button x:Name="SavedProfilesButton" Grid.Column="2" Content="Saved Profiles" Style="{StaticResource ModernButton}"/></Grid>
+                <Button x:Name="PrimaryButton" Content="Start selected model" Style="{StaticResource PrimaryButtonStyle}" Margin="0,0,0,7"/>
                 <TextBlock x:Name="StatusText" Text="This will update settings and start TextGen &amp; Harness together." Foreground="#8E8E97" FontSize="11" HorizontalAlignment="Center" Margin="0,0,0,6"/>
 
                 <Border x:Name="LaunchProgressCard" Visibility="Collapsed" Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="16,13" Margin="0,0,0,14">
@@ -2799,20 +2758,13 @@ function Show-ProfilesMenu {
                   </StackPanel>
                 </Border>
 
-                <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition/></Grid.ColumnDefinitions>
-                  <Button x:Name="QuickHfButton" Grid.Column="0" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="Hugging Face" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="Download models" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
-                  <Button x:Name="QuickImportButton" Grid.Column="2" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="Import GGUF" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="From file or folder" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
-                  <Button x:Name="QuickModelsFolderButton" Grid.Column="4" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="Open Model Folder" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="View in Explorer" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
-                  <Button x:Name="QuickConfigFolderButton" Grid.Column="6" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="Open Config Folder" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="View settings" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
-                  <Button x:Name="QuickLogsButton" Grid.Column="8" Style="{StaticResource QuickButton}"><StackPanel><TextBlock Text="MCP Connections" Foreground="#F2F2F4" FontSize="12"/><TextBlock Text="Add agent tools" Foreground="#7F808A" FontSize="10" Margin="0,4,0,0"/></StackPanel></Button>
-                </Grid>
               </StackPanel>
             </ScrollViewer>
 
             <ScrollViewer x:Name="ModelsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
               <StackPanel>
                 <TextBlock Text="Models and providers" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Choose the fast NInfer provider or manage general-purpose GGUF models for TextGen." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/>
-                <Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="NInfer RTX 4080" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Qwen3.8 27B min-Q4 | MTP3 | OpenAI-compatible | dedicated fast provider" Foreground="#9BC9A8" FontSize="11" Margin="0,5,0,0"/><TextBlock x:Name="ModelsNInferStatus" Text="Checking installation..." Foreground="#F1C66D" FontSize="11" Margin="0,5,0,0"/></StackPanel><Button x:Name="ModelsNInferAction" Grid.Column="1" Content="Switch to NInfer" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="17,10" Margin="16,0,0,0"/><Button x:Name="ModelsNInferRepair" Grid.Column="2" Content="Repair" Style="{StaticResource ModernButton}" Padding="14,9" Margin="8,0,0,0"/></Grid></Border>
+                <Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="NInfer RTX 4080" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Qwen3.8 27B min-Q4 | MTP3 | OpenAI-compatible | about 77 tok/s" Foreground="#9BC9A8" FontSize="11" Margin="0,5,0,0"/><TextBlock x:Name="ModelsNInferStatus" Text="Checking installation..." Foreground="#F1C66D" FontSize="11" Margin="0,5,0,0"/></StackPanel><Button x:Name="ModelsNInferAction" Grid.Column="1" Content="Set up NInfer" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="17,10" Margin="16,0,0,0"/></Grid></Border>
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID." Foreground="#85858F" FontSize="11" Margin="0,4,0,14"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Quant / GGUF file" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose a GGUF file." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="DownloadButton" Content="Download &amp; Install" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11"/><Button x:Name="ImportButton" Content="Import local GGUF" Style="{StaticResource ModernButton}" Margin="10,0,0,0"/></StackPanel></StackPanel></Border>
                 <Grid Margin="0,6,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Available models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><Button x:Name="RefreshModelsButton" Grid.Column="1" Content="Refresh" Style="{StaticResource ModernButton}" Padding="14,8"/></Grid>
                 <StackPanel x:Name="ModelListPanel"/>
@@ -2826,9 +2778,9 @@ function Show-ProfilesMenu {
               </StackPanel>
             </ScrollViewer>
 
-            <ScrollViewer x:Name="SkillsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Skills" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Add skills that DeepSeek Harness can use. Keep them simple: each skill is a folder with a skill.md file and any helper files beside it." Foreground="#92929B" FontSize="13" Margin="0,4,0,20" TextWrapping="Wrap"/><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Harness-only skills folder" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock x:Name="SkillsPathText" Foreground="#9B87FF" FontSize="12" Margin="0,8,0,14" TextWrapping="Wrap"/><WrapPanel><Button x:Name="AddSkillFolderButton" Content="Add skill folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="ImportSkillZipButton" Content="Import skill ZIP" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="CreateSkillButton" Content="Create blank skill" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="OpenSkillsButton" Content="Open skills folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="RefreshSkillsButton" Content="Refresh" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="20" Margin="0,0,0,14"><StackPanel><TextBlock Text="What works as a skill?" Foreground="#F3F3F5" FontSize="15" FontWeight="SemiBold"/><TextBlock Text="Use a folder with a skill.md file that explains the action clearly. AgentPort copies these into DeepSeek Harness at launch so they stay separate from any other agent skills on your PC." Foreground="#92929B" FontSize="12" Margin="0,6,0,0" TextWrapping="Wrap"/></StackPanel></Border><TextBlock Text="Installed Harness skills" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,12"/><StackPanel x:Name="SkillsListPanel"/></StackPanel></ScrollViewer>
+            <ScrollViewer x:Name="SkillsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Skills &amp; MCPs" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Give DeepSeek Harness extra instructions and trusted tools." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="MCP connections" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Connect folders or import standard mcpServers JSON. Only add tools you trust." Foreground="#9BC9A8" FontSize="12" Margin="0,6,12,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="McpManagerButton" Grid.Column="1" Content="Manage connections" Style="{StaticResource PrimaryButtonStyle}" Padding="17,10"/></Grid></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><StackPanel><TextBlock Text="Harness skills" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Add a skill folder or ZIP containing skill.md. AgentPort keeps these separate from other agent apps." Foreground="#92929B" FontSize="12" Margin="0,6,0,12" TextWrapping="Wrap"/><TextBlock x:Name="SkillsPathText" Foreground="#9B87FF" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/><WrapPanel><Button x:Name="AddSkillFolderButton" Content="Add folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="ImportSkillZipButton" Content="Import ZIP" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="CreateSkillButton" Content="Create blank skill" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="OpenSkillsButton" Content="Open folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="RefreshSkillsButton" Content="Refresh" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Border><TextBlock Text="Installed skills" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,12"/><StackPanel x:Name="SkillsListPanel"/></StackPanel></ScrollViewer>
 
-            <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Settings" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Paths and maintenance. AgentPort can bootstrap its own local runtimes on a fresh Windows PC." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Locations" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Models" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="ModelsPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="ModelsPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="TextGenPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="TextGenPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness workspace" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="HarnessPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="HarnessPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Setup checks" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="NInfer is the dedicated RTX 4080 fast path. TextGen is optional and supports general GGUF models. DeepSeek Harness is the agent interface used by either backend." Foreground="#92929B" FontSize="11" Margin="0,5,0,16" TextWrapping="Wrap"/><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="TextGenInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="TextGenInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="TextGenInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallTextGenButton" Content="Install TextGen" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairTextGenButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="DeepSeek Harness" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="HarnessInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="HarnessInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="HarnessInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallHarnessButton" Content="Install Harness" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairHarnessButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Button x:Name="ScanModelsButton" Content="Scan for models from AgentPort, TextGen, Ollama, LM Studio, Unsloth, Hugging Face, Jan and GPT4All" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Quick actions" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,15"/><StackPanel Orientation="Horizontal"><Button x:Name="OpenModelsButton" Content="Open models folder" Style="{StaticResource ModernButton}"/><Button x:Name="OpenConfigButton" Content="Open .dsh folder" Style="{StaticResource ModernButton}" Margin="8,0,0,0"/><Button x:Name="KillButton" Content="Kill local AI processes" Style="{StaticResource DangerButton}" Margin="8,0,0,0"/></StackPanel></StackPanel></Border><Border Background="#0D1117" BorderBrush="#33222A" BorderThickness="1" CornerRadius="18" Padding="24"><StackPanel><TextBlock Text="Component removal" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Destructive actions are kept separate to prevent accidental clicks." Foreground="#7F808A" FontSize="11" Margin="0,4,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="UninstallTextGenButton" Content="Uninstall TextGen app files" Style="{StaticResource DangerButton}"/><Button x:Name="UninstallHarnessButton" Content="Uninstall DeepSeek Harness" Style="{StaticResource DangerButton}" Margin="8,0,0,0"/></StackPanel></StackPanel></Border></StackPanel></ScrollViewer>
+            <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Settings" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Paths and maintenance. AgentPort can bootstrap its own local runtimes on a fresh Windows PC." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Locations" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Models" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="ModelsPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="ModelsPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="TextGenPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="TextGenPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness workspace" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="HarnessPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="HarnessPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Setup checks" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="NInfer is the dedicated RTX 4080 fast path. TextGen is optional and supports general GGUF models. DeepSeek Harness is the agent interface used by either backend." Foreground="#92929B" FontSize="11" Margin="0,5,0,16" TextWrapping="Wrap"/><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="TextGenInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="TextGenInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="TextGenInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallTextGenButton" Content="Install TextGen" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairTextGenButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="DeepSeek Harness" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="HarnessInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="HarnessInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="HarnessInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallHarnessButton" Content="Install Harness" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairHarnessButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Button x:Name="ScanModelsButton" Content="Scan for models from AgentPort, TextGen, Ollama, LM Studio, Unsloth, Hugging Face, Jan and GPT4All" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Border><Border Background="#0D1117" BorderBrush="#33222A" BorderThickness="1" CornerRadius="18" Padding="24"><StackPanel><TextBlock Text="Component removal" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Destructive actions are kept separate to prevent accidental clicks." Foreground="#7F808A" FontSize="11" Margin="0,4,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="UninstallTextGenButton" Content="Uninstall TextGen app files" Style="{StaticResource DangerButton}"/><Button x:Name="UninstallHarnessButton" Content="Uninstall DeepSeek Harness" Style="{StaticResource DangerButton}" Margin="8,0,0,0"/></StackPanel></StackPanel></Border></StackPanel></ScrollViewer>
           </Grid>
         </Grid>
       </Grid>
@@ -2864,9 +2816,8 @@ try {
     }
 } catch {}
 
-$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','ModelsNInferRepair','VramBar','RamBar','VramText','RamText','MemorySummary','HomeVramBar','HomeRamBar','HomeVramText','HomeRamText','HomeFitStatus','HomeMemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','RuntimeOffloadButton','StopButton','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','OpenModelsButton','OpenConfigButton','KillButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','SidebarOffloadButton','QuickHfButton','QuickImportButton','QuickModelsFolderButton','QuickConfigFolderButton','QuickLogsButton','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','RuntimeOffloadButton','StopButton','McpManagerButton','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
-foreach($n in @('UseNInferButton','UseNInferLongButton','InstallNInferButton')){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 
 # Use the approved AgentPort lockup itself in the sidebar rather than re-typesetting it.
 try {
@@ -2929,24 +2880,11 @@ $OffloadCombo.Add_SelectionChanged({ if($OffloadCombo.SelectedItem){ $StatusText
 $PrimaryButton.Add_Click({ Start-UnifiedStack })
 $SavedProfilesButton.Add_Click({ Show-ProfilesMenu })
 $BrowseModelsButton.Add_Click({ Switch-Page 'Models' })
-$SidebarOffloadButton.Add_Click({ Offload-Model })
 $RuntimeOffloadButton.Add_Click({ Offload-Model })
 $RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
 $StopButton.Add_Click({ Kill-Stack; $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; Set-Log 'Stack stopped.' })
-$UseNInferButton.Add_Click({ Select-AndStartNInfer 24576 })
-$ModelsNInferAction.Add_Click({ Select-AndStartNInfer 24576 })
-$ModelsNInferRepair.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
-$UseNInferLongButton.Add_Click({
-    $answer=[Windows.MessageBox]::Show('49k context was verified on this RTX 4080 with about 114 MiB spare GPU memory. Close other GPU applications first. Use maximum context?','NInfer maximum context',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Warning)
-    if($answer -eq [Windows.MessageBoxResult]::Yes){Select-AndStartNInfer 49152}
-})
-$InstallNInferButton.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
-
-$QuickHfButton.Add_Click({ Switch-Page 'Models'; $RepoInput.Focus() | Out-Null })
-$QuickImportButton.Add_Click({ Import-LocalGguf })
-$QuickModelsFolderButton.Add_Click({ $p=[string]$script:Config.models_root; if(-not(Test-Path $p)){New-Item -ItemType Directory -Force -Path $p|Out-Null}; Start-Process explorer.exe $p })
-$QuickConfigFolderButton.Add_Click({ Ensure-ConfigDir; Start-Process explorer.exe $script:ConfigDir })
-$QuickLogsButton.Add_Click({ Show-AgentPortMcpManager })
+$ModelsNInferAction.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
+$McpManagerButton.Add_Click({ Show-AgentPortMcpManager })
 
 $InspectButton.Add_Click({ Inspect-HfRepo })
 $DownloadButton.Add_Click({ Start-HfDownload })
@@ -2961,9 +2899,6 @@ $ModelsPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.models_ro
 $TextGenPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.textgen_root); if($p){$script:Config.textgen_root=$p;Save-Config;Refresh-PathLabels;Set-Log 'TextGen location updated.' 'ok'} })
 $HarnessPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.harness_root); if($p){$script:Config.harness_root=$p;Save-Config;Refresh-PathLabels;Set-Log 'Harness location updated.' 'ok'} })
 $OpenSkillsButton.Add_Click({ $p=[string]$script:Config.harness_skills_root; if(-not(Test-Path $p)){New-Item -ItemType Directory -Force -Path $p|Out-Null}; Start-Process explorer.exe $p })
-$OpenModelsButton.Add_Click({ $p=[string]$script:Config.models_root; if(-not(Test-Path $p)){New-Item -ItemType Directory -Force -Path $p|Out-Null}; Start-Process explorer.exe $p })
-$OpenConfigButton.Add_Click({ Ensure-ConfigDir; Start-Process explorer.exe $script:ConfigDir })
-$KillButton.Add_Click({ Kill-Stack; Set-Log 'AgentPort TextGen, NInfer and Harness processes stopped.' 'ok' })
 $UninstallTextGenButton.Add_Click({
     $root=[string]$script:Config.textgen_root; $ans=[System.Windows.MessageBox]::Show("Remove TextGen application files from:`n`n$root`n`nThe user_data folder is preserved.",'Uninstall TextGen',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
     if($ans -eq [System.Windows.MessageBoxResult]::Yes){ Kill-Stack; Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Where-Object {$_.Name -ne 'user_data'} | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; Set-Log 'TextGen application files removed.' 'ok' }
@@ -2994,7 +2929,8 @@ $Window.Add_Closed({Kill-Stack})
 Write-Host 'AgentPort: showing window'
 if($SmokeTest){
     $Window.Add_ContentRendered({
-        Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count+'; NInfer button='+$UseNInferButton.Content)
+        Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count+'; primary='+$PrimaryButton.Content+'; advancedExpanded='+$AdvancedSettings.IsExpanded)
+        Show-AgentPortMcpManager -SmokeTest
         $timer.Stop()
         $Window.Close()
     })

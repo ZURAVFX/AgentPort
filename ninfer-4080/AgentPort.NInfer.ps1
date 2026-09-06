@@ -63,27 +63,23 @@ function Test-AgentPortNInferInstalled {
 
 function Refresh-NInferControls {
     $installed=Test-AgentPortNInferInstalled
-    if($InstallNInferButton){$InstallNInferButton.Content=if($installed){'Repair'}else{'Setup details'}}
-    if($UseNInferButton){
-        $UseNInferButton.Content=if($installed){'Switch to NInfer'}else{'Set up & use NInfer'}
-        $UseNInferButton.ToolTip=if($installed){'Stop the current backend, start NInfer MTP3 and open DeepSeek Harness'}else{'Run the one-time setup, then start NInfer and open DeepSeek Harness'}
-    }
     if($ModelsNInferStatus){
         $ModelsNInferStatus.Text=if($installed){'Installed and ready'}else{'One-time setup required'}
         $ModelsNInferStatus.Foreground=if($installed){'#79E99A'}else{'#F1C66D'}
     }
-    if($ModelsNInferAction){$ModelsNInferAction.Content=if($installed){'Switch to NInfer'}else{'Set up and use NInfer'}}
+    if($ModelsNInferAction){$ModelsNInferAction.Content=if($installed){'Repair NInfer'}else{'Set up NInfer'}}
 }
 
 function Update-BackendSelectionUi {
     $selected=Get-SelectedModel
     $ninfer=($selected -and $selected.Source -eq 'NInfer')
     foreach($control in @($CacheCombo,$OffloadCombo,$SpecCombo)){if($control){$control.IsEnabled=-not $ninfer}}
+    if($AdvancedSettings){$AdvancedSettings.IsEnabled=-not $ninfer}
     if($ninfer){
         $PrimaryButton.Content='Start NInfer and open Harness'
         $StatusText.Text='NInfer selected. Starting will stop TextGen, load the matching model and open Harness with NInfer active.'
     } else {
-        $PrimaryButton.Content='Apply & Start'
+        $PrimaryButton.Content='Start TextGen and open Harness'
         $StatusText.Text='The selected GGUF will use TextGen with DeepSeek Harness.'
     }
 }
