@@ -15,7 +15,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.2'
+$script:AppVersion = '2.0.3'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -35,6 +35,7 @@ $script:PendingModel = ''
 $script:PendingContext = 49152
 $script:Download = $null
 $script:StatusBusy = $false
+$script:OperationHideAt = $null
 $script:BootstrapProcess = $null
 $script:BootstrapLog = ''
 $script:TextGenProcess = $null
@@ -67,6 +68,8 @@ $script:Defaults = [ordered]@{
     active_offload_mode = ''
     harness_runtime = 'auto'
     harness_last_update = ''
+    hidden_models = @()
+    model_helpers = @()
 }
 
 $script:ContextPresets = [ordered]@{
@@ -1385,11 +1388,34 @@ function Get-ModelSearchRoots {
 }
 
 function Find-RelatedMmproj([string]$ModelPath){
+    foreach($binding in @($script:Config.model_helpers)){
+        if([string]$binding.model -eq $ModelPath -and (Test-Path -LiteralPath ([string]$binding.helper))){
+            return @([string]$binding.helper)
+        }
+    }
     $dir=Split-Path $ModelPath -Parent
     if(-not(Test-Path -LiteralPath $dir)){ return @() }
     $helpers=@(Get-ChildItem -LiteralPath $dir -Filter 'mmproj*.gguf' -File -ErrorAction SilentlyContinue)
     if($helpers.Count -eq 0){ $helpers=@(Get-ChildItem -LiteralPath $dir -Filter '*mmproj*.gguf' -File -ErrorAction SilentlyContinue) }
-    return @($helpers | Select-Object -ExpandProperty FullName)
+    if($helpers.Count -eq 0){return @()}
+    $modelStem=[IO.Path]::GetFileNameWithoutExtension($ModelPath) -replace '(?i)[-_.](?:UD-)?(?:IQ\d|Q\d|BF16|F16|FP16|\d+(?:\.\d+)?bpw).*$',''
+    $modelKey=($modelStem -replace '[^A-Za-z0-9]','').ToLowerInvariant()
+    $matched=@($helpers | Where-Object {
+        $helperStem=([IO.Path]::GetFileNameWithoutExtension($_.Name) -replace '^(?i)mmproj[-_.]*','' -replace '(?i)[-_.](?:BF16|F16|FP16|Q\d).*$','')
+        $helperKey=($helperStem -replace '[^A-Za-z0-9]','').ToLowerInvariant()
+        $helperKey.Length -ge 5 -and ($modelKey.Contains($helperKey) -or $helperKey.Contains($modelKey))
+    })
+    if($matched.Count -gt 0){return @($matched | Select-Object -ExpandProperty FullName)}
+    $modelsInFolder=@(Get-ChildItem -LiteralPath $dir -Filter '*.gguf' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -notmatch '(?i)mmproj'})
+    if($helpers.Count -eq 1 -and $modelsInFolder.Count -eq 1){return @($helpers[0].FullName)}
+    return @()
+}
+
+function Set-ModelHelper([string]$ModelPath,[string]$HelperPath){
+    $bindings=@($script:Config.model_helpers | Where-Object {[string]$_.model -ne $ModelPath})
+    $bindings+=([pscustomobject]@{model=$ModelPath;helper=$HelperPath})
+    $script:Config.model_helpers=$bindings
+    Save-Config
 }
 
 function Get-InstalledModels {
@@ -1539,11 +1565,23 @@ function Get-GpuPlacementSummary {
 
 function Set-OperationFeedback([string]$Title,[string]$Detail,[string]$State='busy'){
     if(-not $OperationBanner){return}
+    $OperationBanner.BeginAnimation([System.Windows.UIElement]::OpacityProperty,$null)
+    $OperationBanner.Opacity=1
     $OperationBanner.Visibility='Visible'; $OperationTitle.Text=$Title; $OperationDetail.Text=$Detail
     $OperationProgress.IsIndeterminate=($State -eq 'busy')
     $OperationProgress.Visibility=if($State -eq 'busy'){'Visible'}else{'Collapsed'}
     $OperationDot.Fill=if($State -eq 'ok'){'#51E57A'}elseif($State -eq 'error'){'#FF6B75'}else{'#A894FF'}
+    $script:OperationHideAt=if($State -eq 'busy'){$null}else{(Get-Date).AddSeconds($(if($State -eq 'error'){10}else{6}))}
     Pump-Ui
+}
+
+function Poll-OperationFeedback {
+    if(-not $OperationBanner -or -not $script:OperationHideAt -or (Get-Date) -lt $script:OperationHideAt){return}
+    $script:OperationHideAt=$null
+    $fade=New-Object System.Windows.Media.Animation.DoubleAnimation
+    $fade.From=1;$fade.To=0;$fade.Duration=[TimeSpan]::FromMilliseconds(350)
+    $fade.Add_Completed({$OperationBanner.Visibility='Collapsed';$OperationBanner.Opacity=1})
+    $OperationBanner.BeginAnimation([System.Windows.UIElement]::OpacityProperty,$fade)
 }
 
 function Set-StopControls([bool]$Enabled){
@@ -2302,12 +2340,14 @@ function Set-PillState($Element,[string]$Text,[string]$State){
 
 function Refresh-Models {
     $script:Models = @(Get-InstalledModels)
+    $hidden=@($script:Config.hidden_models)
+    $script:HomeModels=@($script:Models | Where-Object {$_.Source -in @('Team','NInfer') -or [string]$_.RelPath -notin $hidden})
     $ModelCombo.Items.Clear()
-    foreach($m in $script:Models){ [void]$ModelCombo.Items.Add($m.Display) }
-    if($script:Models.Count -gt 0){
+    foreach($m in $script:HomeModels){ [void]$ModelCombo.Items.Add($m.Display) }
+    if($script:HomeModels.Count -gt 0){
         $idx = 0
         if($script:Config.last_model){
-            for($i=0;$i -lt $script:Models.Count;$i++){ if($script:Models[$i].RelPath -eq $script:Config.last_model){$idx=$i;break} }
+            for($i=0;$i -lt $script:HomeModels.Count;$i++){ if($script:HomeModels[$i].RelPath -eq $script:Config.last_model){$idx=$i;break} }
         }
         $ModelCombo.SelectedIndex = $idx
     }
@@ -2317,8 +2357,15 @@ function Refresh-Models {
 
 function Get-SelectedModel {
     $i = $ModelCombo.SelectedIndex
-    if($i -lt 0 -or $i -ge $script:Models.Count){ return $null }
-    return $script:Models[$i]
+    if($i -lt 0 -or $i -ge $script:HomeModels.Count){ return $null }
+    return $script:HomeModels[$i]
+}
+
+function Select-HomeModel([string]$RelPath){
+    for($i=0;$i -lt $script:HomeModels.Count;$i++){
+        if([string]$script:HomeModels[$i].RelPath -eq $RelPath){$ModelCombo.SelectedIndex=$i;return $true}
+    }
+    return $false
 }
 
 function Update-MemoryFit {
@@ -2412,34 +2459,56 @@ function Refresh-ModelManager {
         $row = New-Object System.Windows.Controls.Border
         $row.CornerRadius='18'; $row.Background='#0F0F16'; $row.BorderBrush='#1D1D29'; $row.BorderThickness='1'; $row.Padding='14'; $row.Margin='0,0,0,10'
         $grid = New-Object System.Windows.Controls.Grid
-        $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='Auto'}))
         $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='*'}))
         $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='Auto'}))
-        $choose=New-Object System.Windows.Controls.RadioButton
-        $choose.GroupName='ExistingModels';$choose.Tag=$m.RelPath;$choose.VerticalAlignment='Center';$choose.Margin='0,0,12,0'
-        $choose.IsChecked=([string]$script:Config.last_model -eq [string]$m.RelPath)
+        $choose=New-Object System.Windows.Controls.CheckBox
+        $choose.Content='Show on Home';$choose.Tag=$m.RelPath;$choose.VerticalAlignment='Center';$choose.Margin='0,0,18,0';$choose.Foreground='#C9C9D0'
+        $choose.IsChecked=([string]$m.RelPath -notin @($script:Config.hidden_models))
         $choose.Add_Click({param($s,$e)
-            for($i=0;$i -lt $script:Models.Count;$i++){if($script:Models[$i].RelPath -eq [string]$s.Tag){$ModelCombo.SelectedIndex=$i;break}}
-            Update-MemoryFit;Set-Log 'Model selected. Choose Start on Home when ready.' 'ok'
+            $rel=[string]$s.Tag
+            $hidden=@($script:Config.hidden_models | Where-Object {[string]$_ -ne $rel})
+            if(-not [bool]$s.IsChecked){$hidden+= $rel}
+            $script:Config.hidden_models=@($hidden);Save-Config;Refresh-Models
+            Set-Log $(if([bool]$s.IsChecked){'Model added to the Home model list.'}else{'Model hidden from Home. Its file is unchanged.'}) 'ok'
         })
-        [System.Windows.Controls.Grid]::SetColumn($choose,0);[void]$grid.Children.Add($choose)
         $stack = New-Object System.Windows.Controls.StackPanel
         $name = New-Object System.Windows.Controls.TextBlock; $name.Text=$m.Name; $name.Foreground='White'; $name.FontWeight='SemiBold'; $name.FontSize=14
         $meta = New-Object System.Windows.Controls.TextBlock
         $meta.Text=('Unverified existing model   |   '+(Format-Size $m.SizeBytes)+'   |   '+$m.Source)
         $meta.Foreground='#777788'; $meta.FontSize=11; $meta.Margin='0,4,8,0'
         [void]$stack.Children.Add($name); [void]$stack.Children.Add($meta)
-        [System.Windows.Controls.Grid]::SetColumn($stack,1); [void]$grid.Children.Add($stack)
+        [System.Windows.Controls.Grid]::SetColumn($stack,0); [void]$grid.Children.Add($stack)
         $actions=New-Object System.Windows.Controls.StackPanel; $actions.Orientation='Horizontal'; $actions.Margin='12,0,0,0'
+        [void]$actions.Children.Add($choose)
+        $helper = New-Object System.Windows.Controls.Button; $helper.Padding='14,8'; $helper.Margin='0,0,8,0'
+        $helper.Content=if(@($m.HelperFiles).Count -gt 0){'Change helper'}else{'Add helper'}
+        $helper.Tag=$m.FullPath;$helper.Style=$Window.FindResource('ModernButton')
+        $helper.Add_Click({param($s,$e)
+            $modelPath=[string]$s.Tag
+            $dlg=New-Object Microsoft.Win32.OpenFileDialog
+            $dlg.Title='Select projector / helper (mmproj) GGUF';$dlg.Filter='Projector helper (*mmproj*.gguf)|*mmproj*.gguf|GGUF file (*.gguf)|*.gguf|All files (*.*)|*.*'
+            if($dlg.ShowDialog()){
+                Set-ModelHelper $modelPath $dlg.FileName
+                Set-Log ('Helper selected for '+[IO.Path]::GetFileName($modelPath)+'.') 'ok'
+                Refresh-Models
+            }
+        })
+        [void]$actions.Children.Add($helper)
         $btn = New-Object System.Windows.Controls.Button; $btn.Padding='14,8'; $btn.Margin='8,0,0,0'
-        $btn.Content='Delete'; $btn.Tag=$m.FullPath; $btn.Style=$Window.FindResource('DangerButton')
+        $btn.Content='Delete'; $btn.Tag=$m.FullPath; $btn.DataContext=$m.RelPath; $btn.Style=$Window.FindResource('DangerButton')
         $btn.Add_Click({ param($s,$e)
             $path=[string]$s.Tag
+            $rel=[string]$s.DataContext
             $answer=[System.Windows.MessageBox]::Show("Permanently delete this model file?`n`n$path",'Delete model',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
-            if($answer -eq [System.Windows.MessageBoxResult]::Yes){ try{ Remove-Item -LiteralPath $path -Force; Set-Log 'Model deleted.' 'ok'; Refresh-Models }catch{ [System.Windows.MessageBox]::Show($_.Exception.Message,'Delete failed') } }
+            if($answer -eq [System.Windows.MessageBoxResult]::Yes){ try{
+                Remove-Item -LiteralPath $path -Force
+                $script:Config.hidden_models=@($script:Config.hidden_models | Where-Object {[string]$_ -ne $rel})
+                $script:Config.model_helpers=@($script:Config.model_helpers | Where-Object {[string]$_.model -ne $path})
+                Save-Config;Set-Log 'Model file permanently deleted.' 'ok';Refresh-Models
+            }catch{ [System.Windows.MessageBox]::Show($_.Exception.Message,'Delete failed') } }
         })
         [void]$actions.Children.Add($btn)
-        [System.Windows.Controls.Grid]::SetColumn($actions,2); [void]$grid.Children.Add($actions)
+        [System.Windows.Controls.Grid]::SetColumn($actions,1); [void]$grid.Children.Add($actions)
         $row.Child=$grid; [void]$ModelListPanel.Children.Add($row)
     }
 }
@@ -2921,7 +2990,7 @@ function Save-CurrentProfile {
 function Load-AgentPortProfile($Profile){
     if($null -eq $Profile){return}
     if($Profile.model){
-        for($i=0;$i -lt $script:Models.Count;$i++){ if($script:Models[$i].RelPath -eq [string]$Profile.model){$ModelCombo.SelectedIndex=$i;break} }
+        [void](Select-HomeModel ([string]$Profile.model))
     }
     if($Profile.context){$ContextCombo.SelectedItem=[string]$Profile.context}
     if($Profile.offload){$OffloadCombo.SelectedItem=[string]$Profile.offload}
@@ -3009,11 +3078,11 @@ function Show-ProfilesMenu {
               <Image x:Name="BrandLogo" Width="156" Height="120" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" SnapsToDevicePixels="True"/>
             </Grid>
             <StackPanel Grid.Row="1">
-              <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2302;" FontSize="20" Width="32"/><TextBlock Text="Home" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x25C7;" FontSize="19" Width="32"/><TextBlock Text="Models" VerticalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2302;" FontSize="20" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Home" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x25C7;" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Models" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
               <Button x:Name="NavRuntimes" Visibility="Collapsed" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&gt;_" FontFamily="Cascadia Mono, Consolas" FontSize="15" Width="32"/><TextBlock Text="Runtimes" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2261;" FontSize="22" Width="32"/><TextBlock Text="Skills &amp; MCPs" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2699;" FontSize="19" Width="32"/><TextBlock Text="Settings" VerticalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2261;" FontSize="22" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Skills &amp; MCPs" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2699;" FontSize="19" HorizontalAlignment="Center" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Settings" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
             </StackPanel>
 
             <StackPanel Grid.Row="3">
@@ -3024,7 +3093,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.2" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.3" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -3082,7 +3151,7 @@ function Show-ProfilesMenu {
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14">
                   <StackPanel>
                     <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Computer resources" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Live GPU and memory use, including other open apps." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open agent" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="StopBackendButton" Content="Stop backend" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopHarnessButton" Content="Stop Harness" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Stop all &amp; free VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></WrapPanel></Grid>
-                    <Border x:Name="OperationBanner" Background="#11131D" BorderBrush="#3B3560" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions><Ellipse x:Name="OperationDot" Width="9" Height="9" Fill="#70707C" VerticalAlignment="Top" Margin="0,5,11,0"/><StackPanel Grid.Column="1"><TextBlock x:Name="OperationTitle" Text="Runtime controls ready" Foreground="#EEEEF2" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="OperationDetail" Text="Stop the backend, Harness, or both. Every action reports when it has finished." Foreground="#9999A4" FontSize="10" TextWrapping="Wrap" Margin="0,3,12,0"/></StackPanel><ProgressBar x:Name="OperationProgress" Grid.Column="2" Height="5" IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/></Grid></Border>
+                    <Border x:Name="OperationBanner" Visibility="Collapsed" Background="#11131D" BorderBrush="#3B3560" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions><Ellipse x:Name="OperationDot" Width="9" Height="9" Fill="#70707C" VerticalAlignment="Top" Margin="0,5,11,0"/><StackPanel Grid.Column="1"><TextBlock x:Name="OperationTitle" Text="Working..." Foreground="#EEEEF2" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="OperationDetail" Text="AgentPort will report when this action finishes." Foreground="#9999A4" FontSize="10" TextWrapping="Wrap" Margin="0,3,12,0"/></StackPanel><ProgressBar x:Name="OperationProgress" Grid.Column="2" Height="5" IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/></Grid></Border>
                     <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="Reading GPU..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Current total use, including other apps" Foreground="#777781" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live system RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="Reading memory..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating selected model..." Foreground="#85858F" FontSize="10" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Border></Grid>
                     <TextBlock Text="GPU priority is always used unless you explicitly choose CPU/RAM Only. GGUF files are memory-mapped, so Windows can show system RAM use even when model layers are running on the GPU. Stop controls affect only AgentPort; ComfyUI and Blender remain open." Foreground="#B0B0B9" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
                     <TextBox x:Name="LogBox" Height="210" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
@@ -3098,10 +3167,13 @@ function Show-ProfilesMenu {
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18" Margin="0,0,0,14"><TextBlock Text="Existing GGUF files are discovered automatically. They may run well, but AgentPort labels them as unverified until they pass the same creative-tool tests." Foreground="#B7B7C0" FontSize="12" TextWrapping="Wrap"/></Border>
                 <Expander Header="Other experimental model families" Foreground="#D1D1D6" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0"><TextBlock Text="These are available for manual testing, not recommended defaults. Tool quality varies by quantisation and prompt format." Foreground="#B8B8C2" TextWrapping="Wrap" Margin="0,0,0,10"/><WrapPanel><Button x:Name="GemmaModelButton" Content="Browse Gemma" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="GptOssModelButton" Content="Browse GPT-OSS" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Expander>
                 <Expander Header="Advanced: NInfer 27B fast chat (RTX 4080)" Foreground="#D1D1D6" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0"><TextBlock Text="About 75–100 tok/s for chat, but limited to 16–24k on a 16 GB card. Harness tools and MCPs use the recommended 48k GGUF backend instead." Foreground="#B8B8C2" TextWrapping="Wrap"/><TextBlock x:Name="ModelsNInferStatus" Text="Checking installation..." Foreground="#F1C66D" Margin="0,6,0,8"/><Button x:Name="ModelsNInferAction" Content="Set up NInfer" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Expander>
-                <Expander Header="Advanced: download another Hugging Face GGUF" Foreground="#D1D1D6" Margin="0,0,0,16">
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID." Foreground="#85858F" FontSize="11" Margin="0,4,0,14"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Quant / GGUF file" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose a GGUF file." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="DownloadButton" Content="Download &amp; Install" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11"/><Button x:Name="ImportButton" Content="Import local GGUF" Style="{StaticResource ModernButton}" Margin="10,0,0,0"/></StackPanel></StackPanel></Border>
+                <Expander Header="Advanced: import files from this PC" Foreground="#D1D1D6" Margin="0,0,0,16">
+                  <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Import a local GGUF" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Choose a model file already on this PC. AgentPort then lets you select its optional mmproj vision or audio helper file." Foreground="#92929B" FontSize="11" Margin="0,5,18,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="ImportButton" Grid.Column="1" Content="Choose model file" Style="{StaticResource ModernButton}" Padding="16,9"/></Grid></Border>
                 </Expander>
-                <Grid Margin="0,6,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your existing models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Discovered locally. Select the circle beside a model, then start it from Home." Foreground="#91919B" FontSize="11" Margin="0,3,0,0"/></StackPanel><Button x:Name="RefreshModelsButton" Grid.Column="1" Content="Scan again" Style="{StaticResource ModernButton}" Padding="14,8"/></Grid>
+                <Expander Header="Advanced: download another Hugging Face GGUF" Foreground="#D1D1D6" Margin="0,0,0,16">
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID." Foreground="#85858F" FontSize="11" Margin="0,4,0,14"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Quant / GGUF file" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose a GGUF file." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><Button x:Name="DownloadButton" Content="Download &amp; Install" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11" HorizontalAlignment="Left"/></StackPanel></Border>
+                </Expander>
+                <Grid Margin="0,6,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your existing models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Tick Show on Home to keep a model in the Home dropdown. Delete permanently removes its GGUF file." Foreground="#91919B" FontSize="11" Margin="0,3,0,0"/></StackPanel><Button x:Name="RefreshModelsButton" Grid.Column="1" Content="Scan for models" Style="{StaticResource ModernButton}" Padding="14,8"/></Grid>
                 <StackPanel x:Name="ModelListPanel"/>
               </StackPanel>
             </ScrollViewer>
@@ -3203,7 +3275,7 @@ $NavModels.Add_Click({ Switch-Page 'Models' })
 $NavRuntimes.Add_Click({ Switch-Page 'Runtimes' })
 $NavSkills.Add_Click({ Switch-Page 'Skills' })
 $NavSettings.Add_Click({ Switch-Page 'Settings' })
-$HomeRecommendedButton.Add_Click({for($i=0;$i -lt $script:Models.Count;$i++){if($script:Models[$i].Source -eq 'Team'){$ModelCombo.SelectedIndex=$i;break}};Start-AgentPortTeam})
+$HomeRecommendedButton.Add_Click({[void](Select-HomeModel 'agentport-fast-qwen3-coder');Start-AgentPortTeam})
 $ExistingModelButton.Add_Click({Switch-Page 'Models'})
 $ToolSetupButton.Add_Click({Show-AgentPortMcpManager})
 
@@ -3235,7 +3307,7 @@ $InstallLowThinkingButton.Add_Click({
 $InspectButton.Add_Click({ Inspect-HfRepo })
 $GemmaModelButton.Add_Click({$RepoInput.Text='unsloth/gemma-4-E4B-it-GGUF';Inspect-HfRepo})
 $GptOssModelButton.Add_Click({$RepoInput.Text='unsloth/gpt-oss-20b-GGUF';Inspect-HfRepo})
-$TeamModelButton.Add_Click({for($i=0;$i -lt $script:Models.Count;$i++){if($script:Models[$i].Source -eq 'Team'){$ModelCombo.SelectedIndex=$i;break}};Switch-Page 'Home';Start-AgentPortTeam})
+$TeamModelButton.Add_Click({[void](Select-HomeModel 'agentport-fast-qwen3-coder');Switch-Page 'Home';Start-AgentPortTeam})
 $TeamWorkspaceButton.Add_Click({$path=[string]$script:Config.team_workspace;New-Item -ItemType Directory -Force -Path $path | Out-Null;Start-Process explorer.exe ('"'+$path+'"')})
 $DownloadButton.Add_Click({ Start-HfDownload })
 $ImportButton.Add_Click({ Import-LocalGguf })
@@ -3285,7 +3357,7 @@ $UninstallHarnessButton.Add_Click({
 
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(2)
-$timer.Add_Tick({ Poll-Launch; Poll-Download; Refresh-Runtime })
+$timer.Add_Tick({ Poll-Launch; Poll-Download; Poll-OperationFeedback; Refresh-Runtime })
 $timer.Start()
 
 Write-Host 'AgentPort: scanning models'
