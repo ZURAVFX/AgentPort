@@ -15,7 +15,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.0'
+$script:AppVersion = '2.0.1'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -1518,13 +1518,81 @@ function Refresh-LiveResources {
     }catch{}finally{$script:ResourceBusy=$false}
 }
 
+function Get-GpuPlacementSummary {
+    if($script:NInferState){ return 'Full GPU placement · NInfer CUDA' }
+    $candidates=@((Join-Path $script:AppDataDir 'team-logs\llama.err.log'),(Join-Path ([string]$script:Config.textgen_root) 'logs\textgen.err.log'))
+    foreach($path in $candidates){
+        if(-not(Test-Path -LiteralPath $path)){continue}
+        try{
+            $recent=(Get-Content -LiteralPath $path -Tail 900 -ErrorAction Stop) -join "`n"
+            $matches=[regex]::Matches($recent,'(?im)offload(?:ed|ing)\s+(\d+)\s*(?:\/|of)\s*(\d+)\s+layers?')
+            if($matches.Count -gt 0){
+                $m=$matches[$matches.Count-1]; $gpu=[int]$m.Groups[1].Value; $total=[int]$m.Groups[2].Value
+                $pct=if($total -gt 0){[math]::Round(100*$gpu/$total)}else{0}
+                return ("GPU placement · {0}/{1} layers ({2}%)" -f $gpu,$total,$pct)
+            }
+            if($recent -match '(?im)offload(?:ed|ing) all .*layers'){return 'GPU placement · all model layers'}
+        }catch{}
+    }
+    return 'GPU-priority placement requested'
+}
+
+function Set-OperationFeedback([string]$Title,[string]$Detail,[string]$State='busy'){
+    if(-not $OperationBanner){return}
+    $OperationBanner.Visibility='Visible'; $OperationTitle.Text=$Title; $OperationDetail.Text=$Detail
+    $OperationProgress.IsIndeterminate=($State -eq 'busy')
+    $OperationProgress.Visibility=if($State -eq 'busy'){'Visible'}else{'Collapsed'}
+    $OperationDot.Fill=if($State -eq 'ok'){'#51E57A'}elseif($State -eq 'error'){'#FF6B75'}else{'#A894FF'}
+    Pump-Ui
+}
+
+function Set-StopControls([bool]$Enabled){
+    foreach($button in @($StopBackendButton,$StopHarnessButton,$PurgeVramButton)){if($button){$button.IsEnabled=$Enabled}}
+}
+
 function Kill-HarnessOnly {
     Stop-AgentPortProcess $script:HarnessProcess
     Stop-VerifiedAgentPortProcess 3080 'harness'
     $script:HarnessProcess=$null
 }
 
+function Stop-BackendOnly {
+    Set-StopControls $false
+    Set-OperationFeedback 'Stopping backend...' 'Closing the model runtime and releasing its GPU allocation.'
+    try{
+        if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
+        Stop-AgentPortProcess $script:TextGenProcess
+        Stop-VerifiedAgentPortProcess 5100 'backend'
+        Stop-StaleNInferInstances
+        $script:TextGenProcess=$null; $script:LaunchState='idle'
+        Refresh-Runtime
+        if(Test-Port 5100){throw 'Port 5100 is still used by a backend that AgentPort does not own.'}
+        Set-OperationFeedback 'Backend stopped' 'GPU memory used by the model has been released. Harness remains open but cannot answer until a backend starts.' 'ok'
+        Set-Log 'Backend stopped. Harness remains open.' 'ok'
+    }catch{
+        Set-OperationFeedback 'Backend could not stop' $_.Exception.Message 'error'
+        Set-Log ('Could not stop backend: '+$_.Exception.Message) 'error'
+    }finally{Set-StopControls $true; Refresh-Runtime}
+}
+
+function Stop-HarnessFromHome {
+    Set-StopControls $false
+    Set-OperationFeedback 'Stopping Harness...' 'Closing the agent interface. The model backend will remain loaded.'
+    try{
+        Kill-HarnessOnly
+        Refresh-Runtime
+        if(Test-Port 3080){throw 'Port 3080 is still used by a Harness process that AgentPort does not own.'}
+        Set-OperationFeedback 'Harness stopped' 'The agent interface is closed. The backend remains loaded and ready.' 'ok'
+        Set-Log 'Harness stopped. The backend remains loaded.' 'ok'
+    }catch{
+        Set-OperationFeedback 'Harness could not stop' $_.Exception.Message 'error'
+        Set-Log ('Could not stop Harness: '+$_.Exception.Message) 'error'
+    }finally{Set-StopControls $true; Refresh-Runtime}
+}
+
 function Purge-AgentPortVram {
+    Set-StopControls $false
+    Set-OperationFeedback 'Stopping everything...' 'Closing the backend and Harness, then checking that AgentPort GPU memory is released.'
     try {
         Kill-Stack
         $script:LaunchState='idle'
@@ -1534,12 +1602,15 @@ function Purge-AgentPortVram {
         Refresh-Runtime
         if((Test-Port 5100) -or (Test-Port 3080)){
             Set-Log 'AgentPort stopped its own processes, but a port is still occupied by an external process. Close that application before retrying.' 'error'
+            Set-OperationFeedback 'Some services are still running' 'A process outside AgentPort still owns a required port. Check the activity log below.' 'error'
             return
         }
+        Set-OperationFeedback 'AgentPort stopped' 'Backend and Harness are closed. AgentPort model VRAM has been released.' 'ok'
         Set-Log 'AgentPort stack stopped and its GPU allocations were released. You can start NInfer again.' 'ok'
     } catch {
+        Set-OperationFeedback 'Could not stop everything' $_.Exception.Message 'error'
         Set-Log ('Could not purge AgentPort GPU allocations: '+$_.Exception.Message) 'error'
-    }
+    } finally { Set-StopControls $true; Refresh-Runtime }
 }
 
 function Prepare-IsolatedHarnessSkills {
@@ -2709,13 +2780,6 @@ function Poll-Launch {
     }
 }
 
-function Offload-Model {
-    if($script:PendingModel -eq 'agentport-fast-qwen3-coder'){Stop-AgentPortProcess $script:TextGenProcess;$script:TextGenProcess=$null;Set-Log 'Local agent stopped. Its GPU memory is now free.' 'ok';return}
-    if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null; Set-Log 'NInfer stopped and GPU memory released.' 'ok'; return}
-    if(-not (Test-Port 5100)){ Set-Log 'TextGen is offline. Nothing to offload.'; return }
-    try{ Invoke-TextGenApi '/v1/internal/model/unload' 'POST' @{} 20 | Out-Null; $script:Config.active_model=''; Save-Config; Set-Log 'Model offloaded. TextGen stays online.' 'ok' }catch{ Set-Log ('Unload API failed: '+$_.Exception.Message) 'error' }
-}
-
 function Refresh-Runtime {
     Refresh-InstallStatus
     if($script:StatusBusy){return}; $script:StatusBusy=$true
@@ -2740,7 +2804,7 @@ function Refresh-Runtime {
                     $ctx=[int]$script:Config.active_context_tokens
                     $mode=[string]$script:Config.active_offload_mode
                     $RuntimeContext.Text=('{0:N0} token context' -f $ctx)
-                    $RuntimeOffload.Text=$mode
+                    $RuntimeOffload.Text=Get-GpuPlacementSummary
                 } else {
                     $RuntimeContext.Text='Context unknown'
                     $RuntimeOffload.Text='Loaded externally'
@@ -2755,10 +2819,14 @@ function Refresh-Runtime {
             }
         } else {
             if($BackendName){$BackendName.Text='Backend'}
-            $RuntimeModel.Text='Nothing running yet'; $RuntimeContext.Text='48k recommended'; $RuntimeOffload.Text='GPU checked automatically'; $RuntimeApi.Text='Tools connect automatically'
+            $RuntimeModel.Text='Nothing running yet'; $RuntimeContext.Text='48k recommended'; $RuntimeOffload.Text='GPU priority is the default'; $RuntimeApi.Text='Tools connect automatically'
             $RuntimeState.Text='Stopped'; $RuntimeState.Foreground='#858596'; $RuntimeStateDot.Fill='#4B4B56'
             if($script:LaunchState -eq 'idle'){Update-BackendSelectionUi}
         }
+        if($RuntimeOpenUiButton){$RuntimeOpenUiButton.IsEnabled=$ds}
+        if($StopBackendButton){$StopBackendButton.IsEnabled=$tg}
+        if($StopHarnessButton){$StopHarnessButton.IsEnabled=$ds}
+        if($PurgeVramButton){$PurgeVramButton.IsEnabled=($tg -or $ds)}
     } finally { $script:StatusBusy=$false; Refresh-LiveResources }
 }
 
@@ -2918,7 +2986,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.1" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -2975,9 +3043,10 @@ function Show-ProfilesMenu {
 
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14">
                   <StackPanel>
-                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Computer resources" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Live GPU and memory use, including other open apps." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open agent" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="RuntimeOffloadButton" Content="Stop model" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Stop AgentPort &amp; free VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></StackPanel></Grid>
+                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Computer resources" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Live GPU and memory use, including other open apps." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open agent" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="StopBackendButton" Content="Stop backend" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopHarnessButton" Content="Stop Harness" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Stop all &amp; free VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></WrapPanel></Grid>
+                    <Border x:Name="OperationBanner" Background="#11131D" BorderBrush="#3B3560" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions><Ellipse x:Name="OperationDot" Width="9" Height="9" Fill="#70707C" VerticalAlignment="Top" Margin="0,5,11,0"/><StackPanel Grid.Column="1"><TextBlock x:Name="OperationTitle" Text="Runtime controls ready" Foreground="#EEEEF2" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="OperationDetail" Text="Stop the backend, Harness, or both. Every action reports when it has finished." Foreground="#9999A4" FontSize="10" TextWrapping="Wrap" Margin="0,3,12,0"/></StackPanel><ProgressBar x:Name="OperationProgress" Grid.Column="2" Height="5" IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/></Grid></Border>
                     <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="Reading GPU..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Current total use, including other apps" Foreground="#777781" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live system RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="Reading memory..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating selected model..." Foreground="#85858F" FontSize="10" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Border></Grid>
-                    <TextBlock Text="Stops only services started by AgentPort. ComfyUI, Blender and other GPU apps remain open." Foreground="#B0B0B9" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBlock Text="GPU priority is always used unless you explicitly choose CPU/RAM Only. GGUF files are memory-mapped, so Windows can show system RAM use even when model layers are running on the GPU. Stop controls affect only AgentPort; ComfyUI and Blender remain open." Foreground="#B0B0B9" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
                     <TextBox x:Name="LogBox" Height="210" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
                   </StackPanel>
                 </Border>
@@ -3039,7 +3108,7 @@ try {
     }
 } catch {}
 
-$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','GemmaModelButton','GptOssModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','RuntimeOffloadButton','PurgeVramButton','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','GemmaModelButton','GptOssModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 $script:HeaderArea=$Window.FindName('HeaderArea');$script:PageTitle=$Window.FindName('PageTitle');$script:PageSubtitle=$Window.FindName('PageSubtitle')
 
@@ -3107,7 +3176,8 @@ $OffloadCombo.Add_SelectionChanged({ if($OffloadCombo.SelectedItem){ $StatusText
 $PrimaryButton.Add_Click({ Start-UnifiedStack })
 $SavedProfilesButton.Add_Click({ Show-ProfilesMenu })
 $BrowseModelsButton.Add_Click({ Switch-Page 'Models' })
-$RuntimeOffloadButton.Add_Click({ Offload-Model })
+$StopBackendButton.Add_Click({ Stop-BackendOnly })
+$StopHarnessButton.Add_Click({ Stop-HarnessFromHome })
 $RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
 $PurgeVramButton.Add_Click({ Purge-AgentPortVram })
 $ModelsNInferAction.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})

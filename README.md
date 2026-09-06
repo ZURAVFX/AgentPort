@@ -28,6 +28,7 @@ AgentPort turns a compatible Windows PC into a private local AI workstation. It 
 - Generic MCP JSON import, with no special folder required
 - Existing GGUF discovery for users who already have models
 - Reliable stop, restart, switching and VRAM release controls
+- Separate **Stop backend**, **Stop Harness**, and **Stop all & free VRAM** actions with visible progress
 
 ## Quick start
 
@@ -65,6 +66,8 @@ Skills and MCPs are kept separate: a skill supplies instructions, while an MCP s
 - Internet access during initial setup
 
 Exact performance and context capacity depend on GPU memory, system RAM and other open GPU applications. The published end-to-end results were measured on Windows with an RTX 4080 16 GB and 64 GB RAM.
+
+AgentPort requests maximum safe GPU offload by default. GGUF model files are memory-mapped, so Windows can show substantial system RAM use even while model layers run on the GPU. AgentPort 2.0.1 shows the reported GPU layer placement directly on Home when available.
 
 ## Existing models and advanced options
 
