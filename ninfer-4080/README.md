@@ -4,14 +4,12 @@ Experimental AgentPort backend for 16 GB RTX 4080 / RTX 4080 SUPER cards.
 
 ## What we measured on the target RTX 4080
 
-Using `Qwen3.8-27B-Ridge-3.7bpw.gguf` at 49,152 context:
+The verified NInfer run uses the stock Qwen3.8 27B min-Q4 `.ninfer` artifact at 24,576 context, INT4 KV and MTP3:
 
-- TextGen / speculation Off: about **79.6 tok/s**
-- native MTP2: about **74.2 tok/s**
-- native MTP4: about **16.4 tok/s**
-- native MTP6: about **6.0 tok/s**
+- NInfer MTP3: about **77 tok/s** end-to-end for 256-token requests
+- TextGen Ridge baseline: about **43–50 tok/s** with n-gram speculation, or about **23 tok/s** with speculation off
 
-The 4080 build therefore defaults to **Speculative Decoding: Off**. Conservative / Medium / Aggressive remain the existing lightweight `ngram-mod` modes. Native MTP is no longer forced by the AgentPort UI because it was slower on the measured 4080.
+The NInfer provider is selected explicitly in AgentPort. TextGen remains available for arbitrary GGUF models; native TextGen MTP4/MTP6 are not enabled because they were slower on the measured 4080.
 
 ## Why NInfer is a separate backend
 
@@ -62,7 +60,9 @@ The first install is large because it may install CUDA plus roughly 13 GB of mod
 
 The experimental Windows build is generated from the v1.6.2 source by `.release-build/v1.7.0-4080/Patch-AgentPort.ps1`.
 
-When the selected model is `Qwen3.8-27B-Ridge-3.7bpw.gguf`, the machine is an RTX 4080-class GPU, and the WSL NInfer engine/model are installed, `Auto` can launch NInfer on port 5100 instead of TextGen. If any prerequisite is missing, AgentPort falls back to TextGen.
+AgentPort shows NInfer as a separate provider. Choosing **Start NInfer and open Harness** stops TextGen, starts the compatible stock min-Q4 artifact on port 5100, points Harness at it, and opens Harness when its secure link is ready. If NInfer is not installed, the same action offers the one-time setup. TextGen remains the general-purpose provider and is not silently replaced for unsupported GGUF or safetensors models.
+
+AgentPort-managed MCP connections are optional. Missing ComfyUI, Blender, or other local MCP commands are non-fatal, so Harness can still start; unavailable connections remain disabled until their command and host application are ready.
 
 Backend selection is stored in `%USERPROFILE%\.dsh\launcher_config.json`:
 
@@ -118,5 +118,5 @@ At the end, the script reports:
 - AgentPort patched source is PowerShell parse-validated in CI.
 - Windows AgentPort EXE is built in CI.
 - TextGen defaults now reflect the real RTX 4080 measurements.
-- NInfer setup is packaged with the test kit but still requires the real 4080 WSL/CUDA hardware run.
-- Keep the PR in Draft until NInfer has completed this benchmark successfully on the target machine.
+- NInfer setup and the OpenAI-compatible API have completed successfully on the target RTX 4080; the isolated benchmark measured about 77 tok/s with MTP3.
+- Keep the PR in Draft until the packaged `v1.7.9-4080` executable has been smoke-tested on the target Windows installation with any desired MCPs enabled.
