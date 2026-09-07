@@ -14,7 +14,7 @@ import (
 var files embed.FS
 
 func main() {
-	root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v2.0.6")
+	root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v2.0.7")
 	err := fs.WalkDir(files, ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr

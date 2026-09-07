@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.6'
+$script:AppVersion = '2.0.7'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -60,6 +60,7 @@ $script:SettingsPath = Join-Path $script:ConfigDir 'settings.yaml'
 $script:ProfilesFile = Join-Path $script:ConfigDir 'agentport_profiles.json'
 $script:Models = @()
 $script:RepoFiles = @()
+$script:RepoHelpers = @()
 $script:LaunchState = 'idle'
 $script:LaunchDeadline = $null
 $script:PendingModel = ''
@@ -194,7 +195,7 @@ T7hqyehs7+d5JADtBTxps0fuCZjH7glPnYjwptWCE/L6twcxAPjOIsDr9payn1rAvPf1VPUuGd1+3Gz0
 Tml+29NKnkPokOeIBEAABEAABEAAJqNZbry2nZxLCgRAAF71PIBXkoJXMRVfSQoEQAAEQAAEQAAEQAAEQAAEQAAEQAAEQAAEQABeC4Di9Y+SAgEg5PWvJAUE
 rBMBShcAAWsbqINIgeKsQSlCIOCsQrVSQDGWwGHUADJm4EC6QPGVwAoA+TKwToFiE+BQZkJky8BGAcWVgQ0AcgmwrQHFJMAWAJkE2HWB4hFgB4A8AljzgGIR
 wALAhASWL/JRpUuAOxWr9AlwAVIlwfFDkJzA9UK12qQogOpynI2uAWbNFyZjZ6Fin9oIhx1VhanLSWPJD1DzJyKzsL/o0Ra99+j/729RglBTySMAAAAASUVO
-RK5CYII=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+RK5CYII=
 '@
 $script:BrandLogoBase64 = @'
 iVBORw0KGgoAAAANSUhEUgAACAAAAAZkCAYAAABx/eUhAAAABmJLR0QA/wD/AP+gvaeTAAAgAElEQVR4nOzdeZTlZ13v+++za87UmSAhkBCGQAiQAGEeRCGC
@@ -2611,17 +2612,26 @@ function Inspect-HfRepo {
         $InspectButton.IsEnabled=$false; $InspectButton.Content='Checking...'; $RepoStatus.Text='Reading GGUF files from Hugging Face...'
         $url='https://huggingface.co/api/models/'+$repo+'/tree/main'
         $data=Invoke-RestMethod -Uri $url -TimeoutSec 20 -Headers @{'User-Agent'='AgentPort/1.0'}
-        $script:RepoFiles=@()
+        $script:RepoFiles=@();$script:RepoHelpers=@()
         $RepoFileCombo.Items.Clear()
+        $RepoHelperCombo.Items.Clear();[void]$RepoHelperCombo.Items.Add('No helper (text-only model)')
         foreach($item in $data){
             $path=[string]$item.path
-            if($path -like '*.gguf' -and [IO.Path]::GetFileName($path) -notlike 'mmproj-*'){
+            if($path -like '*.gguf'){
                 $size=0; if($item.lfs -and $item.lfs.size){$size=[double]$item.lfs.size}elseif($item.size){$size=[double]$item.size}
                 $obj=[pscustomobject]@{ Repo=$repo; Path=$path; Size=$size; Display=([IO.Path]::GetFileName($path)+'   |   '+(Format-Size $size)) }
-                $script:RepoFiles += $obj; [void]$RepoFileCombo.Items.Add($obj.Display)
+                if([IO.Path]::GetFileName($path) -match '(?i)mmproj'){
+                    $script:RepoHelpers += $obj;[void]$RepoHelperCombo.Items.Add($obj.Display)
+                }else{
+                    $script:RepoFiles += $obj;[void]$RepoFileCombo.Items.Add($obj.Display)
+                }
             }
         }
-        if($script:RepoFiles.Count -gt 0){ $RepoFileCombo.SelectedIndex=0; $RepoStatus.Text=('{0} GGUF files found. Choose the quant you want.' -f $script:RepoFiles.Count) } else { $RepoStatus.Text='No GGUF files found in the repository root.' }
+        $RepoHelperCombo.SelectedIndex=0
+        if($script:RepoFiles.Count -gt 0){
+            $RepoFileCombo.SelectedIndex=0
+            $RepoStatus.Text=if($script:RepoHelpers.Count -gt 0){('{0} model files and {1} optional helpers found. Choose both below.' -f $script:RepoFiles.Count,$script:RepoHelpers.Count)}else{('{0} model files found. This repository does not provide an mmproj helper.' -f $script:RepoFiles.Count)}
+        } else { $RepoStatus.Text='No model GGUF files were found in the repository root.' }
     }catch{ $RepoStatus.Text=$_.Exception.Message; [System.Windows.MessageBox]::Show($_.Exception.Message,'Hugging Face') | Out-Null }
     finally{ $InspectButton.IsEnabled=$true; $InspectButton.Content='Inspect files' }
 }
@@ -2634,13 +2644,23 @@ function Start-HfDownload {
     $targetDir=Join-Path ([string]$script:Config.models_root) $folder
     if(-not (Test-Path $targetDir)){New-Item -ItemType Directory -Force -Path $targetDir|Out-Null}
     $dest=Join-Path $targetDir ([IO.Path]::GetFileName($f.Path))
-    $url='https://huggingface.co/'+$f.Repo+'/resolve/main/'+($f.Path -replace ' ','%20')+'?download=true'
+    $sources=@('https://huggingface.co/'+$f.Repo+'/resolve/main/'+($f.Path -replace ' ','%20')+'?download=true')
+    $destinations=@($dest);$expected=[double]$f.Size;$helperDest=''
+    $helperIndex=$RepoHelperCombo.SelectedIndex-1
+    if($helperIndex -ge 0 -and $helperIndex -lt $script:RepoHelpers.Count){
+        $helper=$script:RepoHelpers[$helperIndex]
+        $helperDest=Join-Path $targetDir ([IO.Path]::GetFileName($helper.Path))
+        $sources+=('https://huggingface.co/'+$helper.Repo+'/resolve/main/'+($helper.Path -replace ' ','%20')+'?download=true')
+        $destinations+=$helperDest;$expected+=[double]$helper.Size
+    }
     $jobName='DSH_'+([guid]::NewGuid().ToString('N'))
     try{
         Import-Module BitsTransfer -ErrorAction Stop
-        Start-BitsTransfer -Source $url -Destination $dest -DisplayName $jobName -Asynchronous | Out-Null
-        $script:Download=[pscustomobject]@{Name=$jobName;Dest=$dest;Expected=[double]$f.Size}
-        $DownloadButton.IsEnabled=$false; $DownloadProgress.Value=0; $RepoStatus.Text='Downloading model... you can keep using the manager.'; Set-Log ('Downloading '+$f.Path)
+        Start-BitsTransfer -Source $sources -Destination $destinations -DisplayName $jobName -Asynchronous | Out-Null
+        $script:Download=[pscustomobject]@{Name=$jobName;Dest=$dest;HelperDest=$helperDest;Expected=$expected}
+        $DownloadButton.IsEnabled=$false;$DownloadProgress.Value=0
+        $RepoStatus.Text=if($helperDest){'Downloading model and helper...'}else{'Downloading model...'}
+        Set-Log ('Downloading '+$f.Path+$(if($helperDest){' with '+[IO.Path]::GetFileName($helperDest)}else{''}))
     }catch{
         [System.Windows.MessageBox]::Show('Could not start Windows BITS download: '+$_.Exception.Message,'Download failed')|Out-Null
     }
@@ -2655,6 +2675,7 @@ function Poll-Download {
         if($j.BytesTotal -gt 0){ $DownloadProgress.Value=[math]::Min(100,($j.BytesTransferred/$j.BytesTotal)*100); $RepoStatus.Text=('Downloading | {0:N1}% | {1} / {2}' -f $DownloadProgress.Value,(Format-Size $j.BytesTransferred),(Format-Size $j.BytesTotal)) }
         if($j.JobState -eq 'Transferred'){
             Complete-BitsTransfer -BitsJob $j
+            if($script:Download.HelperDest){Set-ModelHelper $script:Download.Dest $script:Download.HelperDest}
             $DownloadProgress.Value=100; $DownloadButton.IsEnabled=$true; $RepoStatus.Text='Installed. The model is ready on the Home screen.'; Set-Log 'Model download complete.' 'ok'; $script:Download=$null; Refresh-Models; Switch-Page 'Home'
         } elseif($j.JobState -in @('Error','TransientError')){
             $msg=[string]$j.ErrorDescription; Remove-BitsTransfer -BitsJob $j -Confirm:$false -ErrorAction SilentlyContinue; $script:Download=$null; $DownloadButton.IsEnabled=$true; $RepoStatus.Text='Download failed: '+$msg; Set-Log $msg 'error'
@@ -3143,7 +3164,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.6" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.7" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -3220,8 +3241,8 @@ function Show-ProfilesMenu {
                 <Expander Header="Advanced: import files from this PC" Foreground="#D1D1D6" Margin="0,0,0,16">
                   <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Import a local GGUF" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Choose a model file already on this PC. AgentPort then lets you select its optional mmproj vision or audio helper file." Foreground="#92929B" FontSize="11" Margin="0,5,18,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="ImportButton" Grid.Column="1" Content="Choose model file" Style="{StaticResource ModernButton}" Padding="16,9"/></Grid></Border>
                 </Expander>
-                <Expander Header="Advanced: download another Hugging Face GGUF" Foreground="#D1D1D6" Margin="0,0,0,16">
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID." Foreground="#85858F" FontSize="11" Margin="0,4,0,14"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Quant / GGUF file" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose a GGUF file." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><Button x:Name="DownloadButton" Content="Download &amp; Install" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11" HorizontalAlignment="Left"/></StackPanel></Border>
+                <Expander x:Name="HfDownloadExpander" Header="Advanced: download another Hugging Face GGUF" Foreground="#D1D1D6" Margin="0,0,0,16">
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID. AgentPort shows model files and compatible optional helpers separately." Foreground="#85858F" FontSize="11" Margin="0,4,0,14" TextWrapping="Wrap"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Model / quant GGUF" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><TextBlock Text="Optional vision or audio helper (mmproj)" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoHelperCombo"/><TextBlock Text="Leave this on No helper for ordinary text-only models." Foreground="#85858F" FontSize="10" Margin="0,7,0,0"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose its model and optional helper files." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><Button x:Name="DownloadButton" Content="Download &amp; Install selected files" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11" HorizontalAlignment="Left"/></StackPanel></Border>
                 </Expander>
                 <Grid Margin="0,6,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your existing models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Tick Show on Home to keep a model in the Home dropdown. Delete permanently removes its GGUF file." Foreground="#91919B" FontSize="11" Margin="0,3,0,0"/></StackPanel><Button x:Name="RefreshModelsButton" Grid.Column="1" Content="Scan for models" Style="{StaticResource ModernButton}" Padding="14,8"/></Grid>
                 <StackPanel x:Name="ModelListPanel"/>
@@ -3274,7 +3295,7 @@ try {
     }
 } catch {}
 
-$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','GemmaModelButton','GptOssModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','GemmaModelButton','GptOssModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','RepoHelperCombo','HfDownloadExpander','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 $script:HeaderArea=$Window.FindName('HeaderArea');$script:PageTitle=$Window.FindName('PageTitle');$script:PageSubtitle=$Window.FindName('PageSubtitle')
 
@@ -3361,8 +3382,8 @@ $InstallLowThinkingButton.Add_Click({
 })
 
 $InspectButton.Add_Click({ Inspect-HfRepo })
-$GemmaModelButton.Add_Click({$RepoInput.Text='unsloth/gemma-4-E4B-it-GGUF';Inspect-HfRepo})
-$GptOssModelButton.Add_Click({$RepoInput.Text='unsloth/gpt-oss-20b-GGUF';Inspect-HfRepo})
+$GemmaModelButton.Add_Click({$RepoInput.Text='unsloth/gemma-4-E4B-it-GGUF';$HfDownloadExpander.IsExpanded=$true;$HfDownloadExpander.BringIntoView();Inspect-HfRepo})
+$GptOssModelButton.Add_Click({$RepoInput.Text='unsloth/gpt-oss-20b-GGUF';$HfDownloadExpander.IsExpanded=$true;$HfDownloadExpander.BringIntoView();Inspect-HfRepo})
 $TeamModelButton.Add_Click({[void](Select-HomeModel 'agentport-fast-qwen3-coder');Switch-Page 'Home';Start-AgentPortTeam})
 $TeamWorkspaceButton.Add_Click({$path=[string]$script:Config.team_workspace;New-Item -ItemType Directory -Force -Path $path | Out-Null;Start-Process explorer.exe ('"'+$path+'"')})
 $DownloadButton.Add_Click({ Start-HfDownload })
@@ -3431,6 +3452,7 @@ if($SmokeTest){
         Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count+'; primary='+$PrimaryButton.Content+'; advancedExpanded='+$AdvancedSettings.IsExpanded)
         Save-AgentPortPreview $Window 'home'
         Switch-Page 'Models'; Save-AgentPortPreview $Window 'models'
+        $HfDownloadExpander.IsExpanded=$true; $HfDownloadExpander.BringIntoView(); Save-AgentPortPreview $Window 'models-hf'
         Switch-Page 'Skills'; Save-AgentPortPreview $Window 'skills'
         Switch-Page 'Settings'; Save-AgentPortPreview $Window 'settings'
         Switch-Page 'Home'; $Window.Width=$Window.MinWidth; $Window.Height=$Window.MinHeight; Save-AgentPortPreview $Window 'home-min'
