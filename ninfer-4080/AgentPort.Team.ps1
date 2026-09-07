@@ -58,6 +58,7 @@ function Install-AgentPortTeamPreset {
     if(Test-Path $file){Copy-Item -LiteralPath $file -Destination ($file+'.backup') -Force}
     [IO.File]::WriteAllText($file,$text,[Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $root 'preset.yml'),"name: AgentPort Fast`ndescription: Action-first local agent with filesystem, ComfyUI and Blender tools.`norder: 0`n",[Text.UTF8Encoding]::new($false))
+    if(Get-Command Repair-HarnessSettingsFile -ErrorAction SilentlyContinue){ Repair-HarnessSettingsFile | Out-Null }
     $settings=[IO.File]::ReadAllText($script:SettingsPath)
     Copy-Item -LiteralPath $script:SettingsPath -Destination ($script:SettingsPath+'.before-team') -Force
     if($settings -match '(?m)^agent-presets:\s*$'){

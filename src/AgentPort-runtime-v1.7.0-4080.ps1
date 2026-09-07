@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.1.1'
+$script:AppVersion = '2.1.2'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -2155,8 +2155,46 @@ function Write-TextGenFlags([string]$Model,[int]$Context,[string]$Cache,[string]
     [IO.File]::WriteAllLines($flagsFile,$lines,[Text.Encoding]::ASCII)
 }
 
+function Repair-HarnessSettingsFile {
+    # Harness uses a strict YAML parser. Older preset installers could append a
+    # second agent-presets.default entry, which makes every subsequent startup
+    # fail before the web UI is available. Repair only that duplicate key and
+    # keep a one-time backup of the user's original file.
+    $path=[string]$script:SettingsPath
+    if([string]::IsNullOrWhiteSpace($path) -or -not(Test-Path -LiteralPath $path)){ return $false }
+    try {
+        $text=[IO.File]::ReadAllText($path,[Text.Encoding]::UTF8)
+        $lines=@($text -split '\r?\n')
+        $start=-1
+        for($i=0;$i -lt $lines.Count;$i++){ if($lines[$i] -match '^agent-presets:\s*$'){ $start=$i; break } }
+        if($start -lt 0){ return $false }
+        $end=$lines.Count
+        for($i=$start+1;$i -lt $lines.Count;$i++){
+            if($lines[$i] -match '^\S' -and $lines[$i] -notmatch '^\s*$'){ $end=$i; break }
+        }
+        $defaults=New-Object System.Collections.Generic.List[int]
+        for($i=$start+1;$i -lt $end;$i++){ if($lines[$i] -match '^\s+default:\s*'){ [void]$defaults.Add($i) } }
+        if($defaults.Count -le 1){ return $false }
+        $keep=$defaults[0]
+        $out=New-Object System.Collections.Generic.List[string]
+        for($i=0;$i -lt $lines.Count;$i++){
+            if($i -gt $start -and $i -lt $end -and $lines[$i] -match '^\s+default:\s*' -and $i -ne $keep){ continue }
+            [void]$out.Add($lines[$i])
+        }
+        $backup=$path+'.before-agentport-settings-repair'
+        if(-not(Test-Path -LiteralPath $backup)){ Copy-Item -LiteralPath $path -Destination $backup -Force }
+        [IO.File]::WriteAllText($path,($out -join "`r`n"),([Text.UTF8Encoding]::new($false)))
+        if($null -ne $LogBox){ Set-Log 'Removed duplicate Harness preset settings. The original settings file was backed up.' 'ok' }
+        return $true
+    } catch {
+        if($null -ne $LogBox){ Set-Log ('Could not repair Harness settings: '+$_.Exception.Message) 'error' }
+        return $false
+    }
+}
+
 function Update-HarnessSettings([string]$Model,[string]$DisplayName,[int]$Context,[int]$MaxTokens){
     Ensure-ConfigDir
+    Repair-HarnessSettingsFile | Out-Null
     $safeModel=$Model.Replace("'","''")
     $safeName=$DisplayName.Replace("'","''")
     if(-not (Test-Path -LiteralPath $script:SettingsPath)){
@@ -2275,6 +2313,7 @@ function Start-TextGen {
 
 function Start-Harness {
     Ensure-AgentPortRuntimeDirs
+    Repair-HarnessSettingsFile | Out-Null
     $root=[string]$script:Config.harness_root
     if(-not (Test-Path -LiteralPath $root)){ New-Item -ItemType Directory -Force -Path $root | Out-Null }
     Prepare-IsolatedHarnessSkills
@@ -2918,16 +2957,16 @@ function Poll-Launch {
             return
         }
         if(Test-Port 5100){
-            Set-LaunchPhase 5 'Verifying model' 'TextGen API is online. Confirming the selected GGUF is loaded.' 84
+            Set-LaunchPhase 5 'Verifying model' 'Managed GGUF backend is online. Confirming the selected model is loaded.' 84
             $loaded=Get-LoadedModel
             if(Test-ModelMatch $script:PendingModel $loaded){
                 try{
-                    Set-LaunchPhase 6 'Starting Harness' 'Model verified. Starting the agent Harness and connecting it to TextGen.' 92
+                    Set-LaunchPhase 6 'Starting Harness' 'Model verified. Starting the agent Harness and connecting it to the local backend.' 92
                     Start-Harness
                     $script:LaunchState='wait_harness'
                     $script:LaunchDeadline=(Get-Date).AddSeconds(120)
                     $PrimaryButton.Content='Starting Harness...'
-                    Set-Log ('TextGen verified: '+[IO.Path]::GetFileName($loaded)+' | starting Harness') 'ok'
+                    Set-Log ('GGUF backend verified: '+[IO.Path]::GetFileName($loaded)+' | starting Harness') 'ok'
                 }catch{
                     $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
                     Set-LaunchPhase 6 'Harness launch failed' $_.Exception.Message $LaunchProgress.Value 'error'
@@ -3016,7 +3055,7 @@ function Refresh-Runtime {
                 $RuntimeState.Text='Ready'; $RuntimeState.Foreground='#51E57A'; $RuntimeStateDot.Fill='#51E57A'
                 if($script:LaunchState -eq 'idle'){Update-BackendSelectionUi}
             } else {
-                $RuntimeModel.Text='No model loaded'; $RuntimeContext.Text='TextGen is online'; $RuntimeOffload.Text='Model offloaded'; $RuntimeApi.Text='TextGen API :5100'
+                $RuntimeModel.Text='No model loaded'; $RuntimeContext.Text='GGUF backend is online'; $RuntimeOffload.Text='Model offloaded'; $RuntimeApi.Text='Local API :5100'
                 $RuntimeState.Text='Offloaded'; $RuntimeState.Foreground='#A894FF'; $RuntimeStateDot.Fill='#8A6DFF'
                 if($script:LaunchState -eq 'idle'){$PrimaryButton.Content='Load selected model'}
             }
@@ -3195,7 +3234,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.1.1" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.1.2" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
