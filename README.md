@@ -6,7 +6,7 @@ It detects NVIDIA hardware, manages a CUDA-accelerated GGUF backend, connects th
 
 ## Download
 
-**[Download AgentPort v2.0.8 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.0.8/AgentPort.exe)**
+**[Download AgentPort v2.0.9 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.0.9/AgentPort.exe)**
 
 The EXE is portable. Download it and double-click it. AgentPort gives visible progress while it prepares anything missing.
 
