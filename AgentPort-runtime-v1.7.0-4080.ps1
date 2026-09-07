@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.9'
+$script:AppVersion = '2.1.1'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -1491,7 +1491,12 @@ function Get-InstalledModels {
             Get-ChildItem -LiteralPath $root -Filter '*.gguf' -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^(?i:mmproj)' -and $_.Name -notmatch '(?i)mmproj.*\.gguf$' } | Select-Object -First 800 | ForEach-Object {
                 # Hugging Face and Unsloth Desktop use zero-byte snapshot symlinks. Resolve the blob so they are not discarded.
                 $fileSize=[double]$_.Length
-                if($fileSize -le 0 -and $_.PSObject.Properties.Name -contains 'ResolvedTarget' -and $_.ResolvedTarget){ try{$fileSize=[double](Get-Item -LiteralPath $_.ResolvedTarget -Force -ErrorAction Stop).Length}catch{} }
+                if($fileSize -le 0){
+                    $blobPath=''
+                    if($_.PSObject.Properties.Name -contains 'ResolvedTarget' -and $_.ResolvedTarget){$blobPath=[string]$_.ResolvedTarget}
+                    elseif($_.PSObject.Properties.Name -contains 'Target' -and $_.Target){try{$blobPath=[IO.Path]::GetFullPath((Join-Path $_.DirectoryName ([string]$_.Target)))}catch{}}
+                    if($blobPath){try{$fileSize=[double](Get-Item -LiteralPath $blobPath -Force -ErrorAction Stop).Length}catch{}}
+                }
                 if($fileSize -lt 100MB){ return }
                 $key=$_.FullName.ToLowerInvariant()
                 if($seen.ContainsKey($key)){ return }
@@ -1503,6 +1508,7 @@ function Get-InstalledModels {
                 $helpers=@(Find-RelatedMmproj $_.FullName)
                 $helperText = if($helpers.Count -gt 0){ ' | helper: '+([IO.Path]::GetFileName($helpers[0])) } else { '' }
                 $source=[string]$rootInfo.Source
+                if($_.FullName -match '(?i)\\models--unsloth--'){ $source='Unsloth Desktop' }
                 $items += [pscustomobject]@{
                     Display = ('{0} | {1} | {2}{3}' -f $_.Name, (Format-Size $fileSize), $source, $helperText)
                     Name = $_.Name
@@ -2419,6 +2425,9 @@ function Refresh-Models {
         $idx = 0
         if($script:Config.last_model){
             for($i=0;$i -lt $script:HomeModels.Count;$i++){ if($script:HomeModels[$i].RelPath -eq $script:Config.last_model){$idx=$i;break} }
+        } else {
+            # On a fresh profile, use a downloaded Unsloth GPT-OSS model first when present.
+            for($i=0;$i -lt $script:HomeModels.Count;$i++){ if(([string]$script:HomeModels[$i].Name) -match '(?i)gpt[-_ ]?oss'){ $idx=$i;break } }
         }
         $ModelCombo.SelectedIndex = $idx
     }
@@ -3186,7 +3195,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.9" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.1.1" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
