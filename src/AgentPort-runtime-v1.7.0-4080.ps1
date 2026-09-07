@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.7'
+$script:AppVersion = '2.0.8'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -101,6 +101,7 @@ $script:Defaults = [ordered]@{
     harness_runtime = 'auto'
     harness_last_update = ''
     hidden_models = @()
+    ignored_models = @()
     model_helpers = @()
 }
 
@@ -1482,6 +1483,7 @@ function Get-InstalledModels {
     $teamStatus=if($teamReady){'Ready - verified at 48k'}else{'Download 12.8 GB + runtime'}
     $items=@([pscustomobject]@{Display="Qwen3-Coder 30B A3B | Recommended | $teamStatus";Name='Qwen3-Coder 30B A3B - Recommended';RelPath='agentport-fast-qwen3-coder';FullPath=$teamFile;Source='Team';RootPath=(Split-Path $teamFile);HelperFiles=@();SizeBytes=12848766112;SizeGB=11.97;Installed=$teamReady})+$items
     $seen = @{}
+    $ignored=@($script:Config.ignored_models | ForEach-Object {[string]$_})
     foreach($rootInfo in Get-ModelSearchRoots){
         $root=$rootInfo.Path
         if(-not(Test-Path -LiteralPath $root)){ continue }
@@ -1489,6 +1491,7 @@ function Get-InstalledModels {
             Get-ChildItem -LiteralPath $root -Filter '*.gguf' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -ge 100MB -and $_.Name -notmatch '^(?i:mmproj)' -and $_.Name -notmatch '(?i)mmproj.*\.gguf$' } | Select-Object -First 800 | ForEach-Object {
                 $key=$_.FullName.ToLowerInvariant()
                 if($seen.ContainsKey($key)){ return }
+                if([string]$_.FullName -in $ignored){ return }
                 $seen[$key]=$true
                 try { $rel = $_.FullName.Substring($root.TrimEnd('\').Length).TrimStart('\').Replace('\','/') } catch { $rel=$_.Name }
                 $isMainRoot = ($root.TrimEnd('\').ToLowerInvariant() -eq ([string]$script:Config.models_root).TrimEnd('\').ToLowerInvariant())
@@ -2029,11 +2032,24 @@ function Install-DeepSeekHarness([bool]$Repair=$false){
 }
 
 function Scan-Models {
-    Refresh-Models
-    $rootCount=@($script:LastModelScanRoots).Count
-    $modelCount=@($script:Models).Count
-    Set-Log ("Model scan complete. Found $modelCount GGUF model(s) across $rootCount known local AI location(s).") 'ok'
-    if($modelCount -eq 0){ [System.Windows.MessageBox]::Show('No GGUF models were found. Try Hugging Face download, Import GGUF, or change the Models path in Settings.','Scan models')|Out-Null }
+    if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$false;$RefreshModelsButton.Content='Scanning...'}
+    if($ModelScanStatus){$ModelScanStatus.Text='Searching AgentPort, LM Studio, Hugging Face and other known model locations...';$ModelScanStatus.Foreground='#B9ADE8'}
+    $Window.Cursor=[System.Windows.Input.Cursors]::Wait
+    $Window.Dispatcher.Invoke([Action]{},[System.Windows.Threading.DispatcherPriority]::Render)
+    try{
+        Refresh-Models
+        $rootCount=@($script:LastModelScanRoots).Count
+        $modelCount=@($script:Models | Where-Object {$_.Source -notin @('NInfer','Team')}).Count
+        if($ModelScanStatus){$ModelScanStatus.Text=("Found $modelCount local GGUF model(s) in $rootCount known locations.");$ModelScanStatus.Foreground='#8AF5B5'}
+        Set-Log ("Model scan complete. Found $modelCount local GGUF model(s) across $rootCount known AI location(s).") 'ok'
+        if($modelCount -eq 0){ [System.Windows.MessageBox]::Show('No local GGUF models were found. Download one above, import a GGUF, or change the Models location in Settings.','No models found')|Out-Null }
+    }catch{
+        if($ModelScanStatus){$ModelScanStatus.Text='Scan failed: '+$_.Exception.Message;$ModelScanStatus.Foreground='#FF9D9D'}
+        Set-Log ('Model scan failed: '+$_.Exception.Message) 'error'
+    }finally{
+        $Window.Cursor=$null
+        if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$true;$RefreshModelsButton.Content='Scan for models'}
+    }
 }
 
 function Add-SkillFolder {
@@ -2503,7 +2519,7 @@ function Refresh-ModelManager {
     $managed=@($script:Models | Where-Object {$_.Source -notin @('NInfer','Team')})
     if($managed.Count -eq 0){
         $t = New-Object System.Windows.Controls.TextBlock
-        $t.Text='No GGUF models found in your models folder.'; $t.Foreground='#8A8A9A'; $t.Margin='4,8,4,8'
+        $t.Text='No local GGUF models found. Scan known locations or install one above.'; $t.Foreground='#8A8A9A'; $t.Margin='4,8,4,8'
         [void]$ModelListPanel.Children.Add($t); return
     }
     foreach($m in $managed){
@@ -2513,7 +2529,7 @@ function Refresh-ModelManager {
         $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='*'}))
         $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='Auto'}))
         $choose=New-Object System.Windows.Controls.CheckBox
-        $choose.Content='Show on Home';$choose.Tag=$m.RelPath;$choose.VerticalAlignment='Center';$choose.Margin='0,0,18,0';$choose.Foreground='#C9C9D0'
+        $choose.Content='On Home';$choose.Tag=$m.RelPath;$choose.VerticalAlignment='Center';$choose.Margin='0,0,18,0';$choose.Style=$Window.FindResource('ModelVisibilityCheck')
         $choose.IsChecked=([string]$m.RelPath -notin @($script:Config.hidden_models))
         $choose.Add_Click({param($s,$e)
             $rel=[string]$s.Tag
@@ -2523,7 +2539,7 @@ function Refresh-ModelManager {
             Set-Log $(if([bool]$s.IsChecked){'Model added to the Home model list.'}else{'Model hidden from Home. Its file is unchanged.'}) 'ok'
         })
         $stack = New-Object System.Windows.Controls.StackPanel
-        $name = New-Object System.Windows.Controls.TextBlock; $name.Text=$m.Name; $name.Foreground='White'; $name.FontWeight='SemiBold'; $name.FontSize=14
+        $name = New-Object System.Windows.Controls.TextBlock; $name.Text=$m.Name; $name.Foreground='White'; $name.FontWeight='SemiBold'; $name.FontSize=14; $name.TextTrimming='CharacterEllipsis'; $name.ToolTip=$m.FullPath
         $meta = New-Object System.Windows.Controls.TextBlock
         $meta.Text=('Unverified existing model   |   '+(Format-Size $m.SizeBytes)+'   |   '+$m.Source)
         $meta.Foreground='#777788'; $meta.FontSize=11; $meta.Margin='0,4,8,0'
@@ -2532,7 +2548,7 @@ function Refresh-ModelManager {
         $actions=New-Object System.Windows.Controls.StackPanel; $actions.Orientation='Horizontal'; $actions.Margin='12,0,0,0'
         [void]$actions.Children.Add($choose)
         $helper = New-Object System.Windows.Controls.Button; $helper.Padding='14,8'; $helper.Margin='0,0,8,0'
-        $helper.Content=if(@($m.HelperFiles).Count -gt 0){'Change helper'}else{'Add helper'}
+        $helper.Content=if(@($m.HelperFiles).Count -gt 0){'Helper linked'}else{'Add helper'}
         $helper.Tag=$m.FullPath;$helper.Style=$Window.FindResource('ModernButton')
         $helper.Add_Click({param($s,$e)
             $modelPath=[string]$s.Tag
@@ -2546,17 +2562,14 @@ function Refresh-ModelManager {
         })
         [void]$actions.Children.Add($helper)
         $btn = New-Object System.Windows.Controls.Button; $btn.Padding='14,8'; $btn.Margin='8,0,0,0'
-        $btn.Content='Delete'; $btn.Tag=$m.FullPath; $btn.DataContext=$m.RelPath; $btn.Style=$Window.FindResource('DangerButton')
+        $btn.Content='Remove'; $btn.Tag=$m.FullPath; $btn.DataContext=$m.RelPath; $btn.Style=$Window.FindResource('ModernButton'); $btn.ToolTip='Remove from AgentPort only. The GGUF file stays on your drive.'
         $btn.Add_Click({ param($s,$e)
             $path=[string]$s.Tag
             $rel=[string]$s.DataContext
-            $answer=[System.Windows.MessageBox]::Show("Permanently delete this model file?`n`n$path",'Delete model',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
-            if($answer -eq [System.Windows.MessageBoxResult]::Yes){ try{
-                Remove-Item -LiteralPath $path -Force
-                $script:Config.hidden_models=@($script:Config.hidden_models | Where-Object {[string]$_ -ne $rel})
-                $script:Config.model_helpers=@($script:Config.model_helpers | Where-Object {[string]$_.model -ne $path})
-                Save-Config;Set-Log 'Model file permanently deleted.' 'ok';Refresh-Models
-            }catch{ [System.Windows.MessageBox]::Show($_.Exception.Message,'Delete failed') } }
+            $script:Config.ignored_models=@($script:Config.ignored_models | Where-Object {[string]$_ -ne $path})+@($path)
+            $script:Config.hidden_models=@($script:Config.hidden_models | Where-Object {[string]$_ -ne $rel})
+            $script:Config.model_helpers=@($script:Config.model_helpers | Where-Object {[string]$_.model -ne $path})
+            Save-Config;Set-Log 'Model removed from AgentPort. Its GGUF file remains on your drive.' 'ok';Refresh-Models
         })
         [void]$actions.Children.Add($btn)
         [System.Windows.Controls.Grid]::SetColumn($actions,1); [void]$grid.Children.Add($actions)
@@ -2696,6 +2709,7 @@ function Import-LocalGguf {
         if(-not(Test-Path $targetDir)){New-Item -ItemType Directory -Force -Path $targetDir|Out-Null}
         $dest=Join-Path $targetDir ([IO.Path]::GetFileName($src))
         Copy-Item -LiteralPath $src -Destination $dest -Force
+        $script:Config.ignored_models=@($script:Config.ignored_models | Where-Object {[string]$_ -ne $dest});Save-Config
         $helpers=@(Find-RelatedMmproj $src)
         foreach($h in $helpers){ Copy-Item -LiteralPath $h -Destination (Join-Path $targetDir ([IO.Path]::GetFileName($h))) -Force }
         if($helpers.Count -gt 0){
@@ -3107,6 +3121,10 @@ function Show-ProfilesMenu {
     </Style>
     <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource ModernButton}"><Setter Property="Background" Value="{StaticResource PurpleGradient}"/><Setter Property="BorderBrush" Value="#806EFF"/><Setter Property="Foreground" Value="White"/><Setter Property="FontSize" Value="18"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="Padding" Value="20,15"/></Style>
     <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource ModernButton}"><Setter Property="Foreground" Value="#FF9D9D"/><Setter Property="Background" Value="#1A1014"/><Setter Property="BorderBrush" Value="#3A2028"/></Style>
+    <Style x:Key="ModelVisibilityCheck" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="#D8D8DE"/><Setter Property="FontSize" Value="12"/><Setter Property="Cursor" Value="Hand"/><Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox"><StackPanel Orientation="Horizontal"><Grid Width="22" Height="22" Margin="0,0,9,0"><Border x:Name="Box" Background="#0B0F14" BorderBrush="#39414D" BorderThickness="1" CornerRadius="6"/><Path x:Name="Mark" Data="M 5,11 L 9,15 L 17,7" Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed"/></Grid><ContentPresenter VerticalAlignment="Center"/></StackPanel><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="BorderBrush" Value="#806EFF"/></Trigger><Trigger Property="IsChecked" Value="True"><Setter TargetName="Box" Property="Background" Value="#6D52F4"/><Setter TargetName="Box" Property="BorderBrush" Value="#9C8BFF"/><Setter TargetName="Mark" Property="Visibility" Value="Visible"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+    </Style>
     <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource ModernButton}">
       <Setter Property="HorizontalContentAlignment" Value="Left"/><Setter Property="Padding" Value="18,13"/><Setter Property="Margin" Value="0,0,0,8"/><Setter Property="Background" Value="Transparent"/><Setter Property="BorderBrush" Value="Transparent"/><Setter Property="FontSize" Value="14"/><Setter Property="Foreground" Value="#B8B8C0"/>
       <Style.Triggers><Trigger Property="Tag" Value="active"><Setter Property="Background" Value="#17152B"/><Setter Property="BorderBrush" Value="#4D3DB4"/><Setter Property="Foreground" Value="#FFFFFF"/></Trigger></Style.Triggers>
@@ -3164,7 +3182,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.7" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.8" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -3236,7 +3254,6 @@ function Show-ProfilesMenu {
               <StackPanel>
                 <Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="14" Padding="22" Margin="0,0,0,14"><StackPanel><TextBlock Text="Recommended for 16 GB: Qwen3-Coder 30B A3B" Foreground="#EAFBEF" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="12.8 GB download | 48k context | tested with filesystem, ComfyUI and Blender tools | about 100 tok/s on the RTX 4080. Includes a portable Windows CUDA runtime." Foreground="#B3DCC0" TextWrapping="Wrap" Margin="0,7,0,12"/><Button x:Name="TeamModelButton" Content="Download &amp; start recommended" Style="{StaticResource PrimaryButtonStyle}" HorizontalAlignment="Left" Padding="18,10"/></StackPanel></Border>
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18" Margin="0,0,0,14"><TextBlock Text="Existing GGUF files are discovered automatically. They may run well, but AgentPort labels them as unverified until they pass the same creative-tool tests." Foreground="#B7B7C0" FontSize="12" TextWrapping="Wrap"/></Border>
-                <Expander Header="Other experimental model families" Foreground="#D1D1D6" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0"><TextBlock Text="These are available for manual testing, not recommended defaults. Tool quality varies by quantisation and prompt format." Foreground="#B8B8C2" TextWrapping="Wrap" Margin="0,0,0,10"/><WrapPanel><Button x:Name="GemmaModelButton" Content="Browse Gemma" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="GptOssModelButton" Content="Browse GPT-OSS" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Expander>
                 <Expander Header="Advanced: NInfer 27B fast chat (RTX 4080)" Foreground="#D1D1D6" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0"><TextBlock Text="About 75–100 tok/s for chat, but limited to 16–24k on a 16 GB card. Harness tools and MCPs use the recommended 48k GGUF backend instead." Foreground="#B8B8C2" TextWrapping="Wrap"/><TextBlock x:Name="ModelsNInferStatus" Text="Checking installation..." Foreground="#F1C66D" Margin="0,6,0,8"/><Button x:Name="ModelsNInferAction" Content="Set up NInfer" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Expander>
                 <Expander Header="Advanced: import files from this PC" Foreground="#D1D1D6" Margin="0,0,0,16">
                   <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Import a local GGUF" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Choose a model file already on this PC. AgentPort then lets you select its optional mmproj vision or audio helper file." Foreground="#92929B" FontSize="11" Margin="0,5,18,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="ImportButton" Grid.Column="1" Content="Choose model file" Style="{StaticResource ModernButton}" Padding="16,9"/></Grid></Border>
@@ -3244,7 +3261,7 @@ function Show-ProfilesMenu {
                 <Expander x:Name="HfDownloadExpander" Header="Advanced: download another Hugging Face GGUF" Foreground="#D1D1D6" Margin="0,0,0,16">
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID. AgentPort shows model files and compatible optional helpers separately." Foreground="#85858F" FontSize="11" Margin="0,4,0,14" TextWrapping="Wrap"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Model / quant GGUF" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><TextBlock Text="Optional vision or audio helper (mmproj)" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoHelperCombo"/><TextBlock Text="Leave this on No helper for ordinary text-only models." Foreground="#85858F" FontSize="10" Margin="0,7,0,0"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose its model and optional helper files." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><Button x:Name="DownloadButton" Content="Download &amp; Install selected files" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11" HorizontalAlignment="Left"/></StackPanel></Border>
                 </Expander>
-                <Grid Margin="0,6,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your existing models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Tick Show on Home to keep a model in the Home dropdown. Delete permanently removes its GGUF file." Foreground="#91919B" FontSize="11" Margin="0,3,0,0"/></StackPanel><Button x:Name="RefreshModelsButton" Grid.Column="1" Content="Scan for models" Style="{StaticResource ModernButton}" Padding="14,8"/></Grid>
+                <Grid Margin="0,8,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Choose which models appear on Home. Remove only forgets a model in AgentPort; its file stays on your drive." Foreground="#A0A0AA" FontSize="11" Margin="0,3,18,0" TextWrapping="Wrap"/><TextBlock x:Name="ModelScanStatus" Text="Ready to scan known local model locations." Foreground="#777788" FontSize="10" Margin="0,5,18,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="RefreshModelsButton" Grid.Column="1" Content="Scan for models" Style="{StaticResource ModernButton}" Padding="14,8" VerticalAlignment="Center"/></Grid>
                 <StackPanel x:Name="ModelListPanel"/>
               </StackPanel>
             </ScrollViewer>
@@ -3295,7 +3312,7 @@ try {
     }
 } catch {}
 
-$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','GemmaModelButton','GptOssModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','RepoHelperCombo','HfDownloadExpander','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','RepoHelperCombo','HfDownloadExpander','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelScanStatus','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 $script:HeaderArea=$Window.FindName('HeaderArea');$script:PageTitle=$Window.FindName('PageTitle');$script:PageSubtitle=$Window.FindName('PageSubtitle')
 
@@ -3382,13 +3399,11 @@ $InstallLowThinkingButton.Add_Click({
 })
 
 $InspectButton.Add_Click({ Inspect-HfRepo })
-$GemmaModelButton.Add_Click({$RepoInput.Text='unsloth/gemma-4-E4B-it-GGUF';$HfDownloadExpander.IsExpanded=$true;$HfDownloadExpander.BringIntoView();Inspect-HfRepo})
-$GptOssModelButton.Add_Click({$RepoInput.Text='unsloth/gpt-oss-20b-GGUF';$HfDownloadExpander.IsExpanded=$true;$HfDownloadExpander.BringIntoView();Inspect-HfRepo})
 $TeamModelButton.Add_Click({[void](Select-HomeModel 'agentport-fast-qwen3-coder');Switch-Page 'Home';Start-AgentPortTeam})
 $TeamWorkspaceButton.Add_Click({$path=[string]$script:Config.team_workspace;New-Item -ItemType Directory -Force -Path $path | Out-Null;Start-Process explorer.exe ('"'+$path+'"')})
 $DownloadButton.Add_Click({ Start-HfDownload })
 $ImportButton.Add_Click({ Import-LocalGguf })
-$RefreshModelsButton.Add_Click({ Refresh-Models; Set-Log 'Model list refreshed.' })
+$RefreshModelsButton.Add_Click({ Scan-Models })
 $RefreshSkillsButton.Add_Click({ Refresh-SkillsPanel; Set-Log 'Skills list refreshed.' })
 if($AddSkillFolderButton){ $AddSkillFolderButton.Add_Click({ Add-SkillFolder }) }
 if($ImportSkillZipButton){ $ImportSkillZipButton.Add_Click({ Import-SkillZip }) }
@@ -3451,7 +3466,8 @@ if($SmokeTest){
     $Window.Add_ContentRendered({
         Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count+'; primary='+$PrimaryButton.Content+'; advancedExpanded='+$AdvancedSettings.IsExpanded)
         Save-AgentPortPreview $Window 'home'
-        Switch-Page 'Models'; Save-AgentPortPreview $Window 'models'
+        Switch-Page 'Models'; Scan-Models; Save-AgentPortPreview $Window 'models-scanned'
+        Save-AgentPortPreview $Window 'models'
         $HfDownloadExpander.IsExpanded=$true; $HfDownloadExpander.BringIntoView(); Save-AgentPortPreview $Window 'models-hf'
         Switch-Page 'Skills'; Save-AgentPortPreview $Window 'skills'
         Switch-Page 'Settings'; Save-AgentPortPreview $Window 'settings'
