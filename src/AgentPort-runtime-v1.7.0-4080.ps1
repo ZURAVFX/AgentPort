@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.2.2'
+$script:AppVersion = '2.2.4'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -85,7 +85,7 @@ $script:ModelScanCompletion = $null
 $script:ModelCatalogueScannedAt = ''
 $script:RuntimeProbeOperation = $null
 $script:RuntimeSnapshot = $null
-$script:StopOperation = [pscustomobject]@{Active=$false;Generation=0;Kind='';StartedAt=$null}
+$script:StopOperation = [pscustomobject]@{Active=$false;Generation=0;Kind='';StartedAt=$null;Handle=$null}
 $script:BackgroundOperationBudgetSeconds = 45
 $script:AppDataDir = Join-Path $env:LOCALAPPDATA 'AgentPort'
 $script:PublicDataDir = Join-Path $env:PUBLIC 'AgentPort'
@@ -2291,6 +2291,7 @@ function Start-Harness {
     Ensure-AgentPortRuntimeDirs
     Repair-HarnessSettingsFile | Out-Null
     Repair-AgentPortPresetCompatibility
+    Ensure-AgentPortSkillIsolation
     $root=[string]$script:Config.harness_root
     if(-not (Test-Path -LiteralPath $root)){ New-Item -ItemType Directory -Force -Path $root | Out-Null }
     Prepare-IsolatedHarnessSkills

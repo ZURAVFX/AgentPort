@@ -46,6 +46,32 @@ order: 1
     return $destination
 }
 
+function Ensure-AgentPortSkillIsolation {
+    # AgentPort-owned presets must not inherit Harness' global/project skill
+    # roots. Those roots can include skills installed for Codex or other
+    # agents (for example Impeccable). Only the explicit Harness folder is
+    # mounted for these presets. User-created presets are never changed.
+    $skills=([string]$script:Config.harness_skills_root).Replace('\','/').Replace("'","''")
+    foreach($name in @('zura-low-thinking','agentport-fast')){
+        $file=Join-Path $env:USERPROFILE ('.dsh\.agent-presets\'+$name+'\agent.cordis.yml')
+        if(-not(Test-Path -LiteralPath $file)){continue}
+        $text=[IO.File]::ReadAllText($file,[Text.Encoding]::UTF8)
+        $pattern='(?ms)(^- id: skill-filesystem\r?\n.*?)(?=^- id: |\z)'
+        $match=[regex]::Match($text,$pattern)
+        if(-not $match.Success){continue}
+        $block=$match.Groups[1].Value
+        if($block -match '(?m)^\s*includeDefaultRoots:\s*false\s*$' -and $block -match '(?m)^\s*customSkillDirs:'){continue}
+        $replacement='$1'+[Environment]::NewLine+'  config:'+([Environment]::NewLine)+'    includeDefaultRoots: false'+([Environment]::NewLine)+'    customSkillDirs:'+([Environment]::NewLine)+'      - '''+$skills+''''+([Environment]::NewLine)
+        $updatedBlock=[regex]::Replace($block,'(?m)^(\s*name:\s*[''\"]?@deepseek-ai/dsh-skill-filesystem[''\"]?\s*)$',$replacement,1)
+        if($updatedBlock -eq $block){continue}
+        $backup=$file+'.before-skill-isolation'
+        if(-not(Test-Path -LiteralPath $backup)){Copy-Item -LiteralPath $file -Destination $backup -Force}
+        $text=$text.Substring(0,$match.Index)+$updatedBlock+$text.Substring($match.Index+$match.Length)
+        [IO.File]::WriteAllText($file,$text,[Text.UTF8Encoding]::new($false))
+        Set-Log ('Restricted '+$name+' to the explicit Harness skills folder.') 'ok'
+    }
+}
+
 function Repair-AgentPortPresetCompatibility {
     # Only migrate AgentPort-created presets, never the user's other presets.
     foreach($name in @('zura-low-thinking','agentport-fast')){
