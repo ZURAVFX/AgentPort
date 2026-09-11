@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.2.1'
+$script:AppVersion = '2.2.2'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -3323,7 +3323,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.2.0" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock x:Name="AppVersionLabel" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -3381,6 +3381,12 @@ function Show-ProfilesMenu {
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="16" Margin="0,0,0,10">
                   <StackPanel>
                     <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Agent controls" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Open the agent or stop only the part you need. These controls stay available while you work." Foreground="#85858F" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open agent" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="StopBackendButton" Content="Stop backend" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopHarnessButton" Content="Stop Harness" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Stop all &amp; free VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></WrapPanel></Grid>
+                    <WrapPanel Margin="0,4,0,5" VerticalAlignment="Center">
+                      <CheckBox x:Name="AutoContinueCheck" Content="Auto-continue cut-off replies" Style="{StaticResource ModelVisibilityCheck}" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                      <TextBlock Text="Limit per request" Foreground="#BDBDC5" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                      <ComboBox x:Name="AutoContinueLimit" Width="82" MinHeight="32" AutomationProperties.Name="Maximum automatic continuations per request"/>
+                    </WrapPanel>
+                    <TextBlock x:Name="AutoContinueStatus" Text="Optional. Resumes output-limit cut-offs only. Stop and permission checks still apply." Foreground="#BDBDC5" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,12"/>
                     <Border x:Name="OperationBanner" Visibility="Collapsed" Background="#11131D" BorderBrush="#3B3560" BorderThickness="1" CornerRadius="12" Padding="14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions><Ellipse x:Name="OperationDot" Width="9" Height="9" Fill="#70707C" VerticalAlignment="Top" Margin="0,5,11,0"/><StackPanel Grid.Column="1"><TextBlock x:Name="OperationTitle" Text="Working..." Foreground="#EEEEF2" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="OperationDetail" Text="AgentPort will report when this action finishes." Foreground="#9999A4" FontSize="10" TextWrapping="Wrap" Margin="0,3,12,0"/></StackPanel><ProgressBar x:Name="OperationProgress" Grid.Column="2" Height="5" IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/></Grid></Border>
                   </StackPanel>
                 </Border>
@@ -3427,6 +3433,7 @@ function Show-ProfilesMenu {
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 Write-Host 'AgentPort: loading window'
 $Window = [System.Windows.Markup.XamlReader]::Load($reader)
+$Window.FindName('AppVersionLabel').Text='v'+$script:AppVersion
 $Window.Add_SourceInitialized({
     try {
         $native=New-Object System.Windows.Interop.WindowInteropHelper($Window)
@@ -3458,6 +3465,7 @@ try {
 } catch {}
 
 $names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','RepoHelperCombo','HfDownloadExpander','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ShowAllModelsButton','HideAllModelsButton','ModelScanStatus','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names+=@('AutoContinueCheck','AutoContinueLimit','AutoContinueStatus')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 $script:HeaderArea=$Window.FindName('HeaderArea');$script:PageTitle=$Window.FindName('PageTitle');$script:PageSubtitle=$Window.FindName('PageSubtitle')
 
@@ -3487,6 +3495,23 @@ $specSaved=[string]$script:Config.speculative_mode; if(-not $specSaved){$specSav
 $SpecCombo.SelectedItem=$specSaved; if($SpecCombo.SelectedIndex -lt 0){$SpecCombo.SelectedItem='Off'}
 foreach($v in @('1,024','2,048','4,096','8,192','16,384')){[void]$MaxTokensCombo.Items.Add($v)}
 $maxSaved=('{0:N0}' -f [int]$script:Config.max_tokens); $MaxTokensCombo.SelectedItem=$maxSaved; if($MaxTokensCombo.SelectedIndex -lt 0){$MaxTokensCombo.SelectedItem='2,048'}
+
+$autoOptions=Get-AgentPortAutoContinueOptions
+foreach($limit in @(5,10,20,50)){[void]$AutoContinueLimit.Items.Add($limit)}
+if(-not $AutoContinueLimit.Items.Contains([int]$autoOptions.maxContinuations)){[void]$AutoContinueLimit.Items.Add([int]$autoOptions.maxContinuations)}
+$AutoContinueLimit.SelectedItem=[int]$autoOptions.maxContinuations
+$AutoContinueCheck.IsChecked=[bool]$autoOptions.enabled
+function Save-AutoContinueControls {
+    try {
+        Save-AgentPortAutoContinueOptions -Enabled ([bool]$AutoContinueCheck.IsChecked) -Limit ([int]$AutoContinueLimit.SelectedItem)
+        $AutoContinueStatus.Text=if($AutoContinueCheck.IsChecked){'On. Each resume is shown in the chat. Changes apply immediately to Harness started by this version.'}else{'Off. No more automatic continuations will be queued. A reply already running is not cancelled.'}
+    } catch {
+        $AutoContinueStatus.Text='Could not save auto-continue. '+$_.Exception.Message
+        Set-Log $AutoContinueStatus.Text 'error'
+    }
+}
+$AutoContinueCheck.Add_Click({Save-AutoContinueControls})
+$AutoContinueLimit.Add_SelectionChanged({Save-AutoContinueControls})
 
 function Refresh-PathLabels {
     $ModelsPathText.Text=[string]$script:Config.models_root

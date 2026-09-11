@@ -7,7 +7,7 @@ function Write-AgentPortSettingsFixture([string]$Path,[string]$Text){[IO.File]::
 try {
     New-Item -ItemType Directory -Force -Path $scratch | Out-Null
     $script:AppDataDir=Join-Path $scratch 'appdata'
-    $script:PortableNodeDir=Join-Path $env:LOCALAPPDATA 'AgentPort\node-v22.23.1-win-x64'
+    $script:PortableNodeDir=Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'AgentPort\node-v22.23.1-win-x64'
     $script:NpmCacheDir=Join-Path $env:LOCALAPPDATA 'AgentPort\npm-cache'
     $script:Config=[pscustomobject]@{harness_root=(Join-Path $scratch 'harness')}
     . (Join-Path $PSScriptRoot 'AgentPort.Settings.ps1')

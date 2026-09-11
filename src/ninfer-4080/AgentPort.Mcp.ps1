@@ -1,3 +1,5 @@
+. (Join-Path $PSScriptRoot 'AgentPort.AutoContinue.ps1')
+
 function Resolve-AgentPortMcpCommand {
     param([string]$Command)
     if(-not $Command -or $Command -notin @('comfy-mcp','blender-mcp')){return $Command}
@@ -179,7 +181,8 @@ function Write-AgentPortMcpOverlay {
             }
         }
     }
-    $json=if($entries.Count){ConvertTo-Json -InputObject @(@{insert=$entries}) -Depth 15}else{'[]'}
+    $entries+=@{id='agentport-auto-continue';name=(Join-Path $PSScriptRoot 'AgentPort.AutoContinue.js');config=@{settingsPath=(Get-AgentPortAutoContinuePath)}}
+    $json=ConvertTo-Json -InputObject @(@{insert=$entries}) -Depth 15
     [IO.File]::WriteAllText($Path,$json,[Text.UTF8Encoding]::new($false))
     return $Path
 }
