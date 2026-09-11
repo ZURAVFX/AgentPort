@@ -1,4 +1,4 @@
-param([switch]$SmokeTest,[switch]$IntegrationTest)
+param([switch]$SmokeTest,[switch]$IntegrationTest,[switch]$IntegrationCurrentModel)
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -46,12 +46,13 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.2.0'
+$script:AppVersion = '2.2.1'
 $script:AgentPortRoot = $PSScriptRoot
-$script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
+$script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.NInfer.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Background.ps1')
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Settings.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Mcp.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Team.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Presets.ps1')
@@ -2226,120 +2227,24 @@ function Write-TextGenFlags([string]$Model,[int]$Context,[string]$Cache,[string]
 }
 
 function Repair-HarnessSettingsFile {
-    # Harness uses a strict YAML parser. Older preset installers could append a
-    # second agent-presets.default entry, which makes every subsequent startup
-    # fail before the web UI is available. Repair only that duplicate key and
-    # keep a one-time backup of the user's original file.
     $path=[string]$script:SettingsPath
-    if([string]::IsNullOrWhiteSpace($path) -or -not(Test-Path -LiteralPath $path)){ return $false }
+    if([string]::IsNullOrWhiteSpace($path) -or -not(Test-Path -LiteralPath $path)){return $false}
     try {
-        $text=[IO.File]::ReadAllText($path,[Text.Encoding]::UTF8)
-        $lines=@($text -split '\r?\n')
-        $start=-1
-        for($i=0;$i -lt $lines.Count;$i++){ if($lines[$i] -match '^agent-presets:\s*$'){ $start=$i; break } }
-        if($start -lt 0){ return $false }
-        $end=$lines.Count
-        for($i=$start+1;$i -lt $lines.Count;$i++){
-            if($lines[$i] -match '^\S' -and $lines[$i] -notmatch '^\s*$'){ $end=$i; break }
-        }
-        $defaults=New-Object System.Collections.Generic.List[int]
-        for($i=$start+1;$i -lt $end;$i++){ if($lines[$i] -match '^\s+default:\s*'){ [void]$defaults.Add($i) } }
-        if($defaults.Count -le 1){ return $false }
-        $keep=$defaults[0]
-        $out=New-Object System.Collections.Generic.List[string]
-        for($i=0;$i -lt $lines.Count;$i++){
-            if($i -gt $start -and $i -lt $end -and $lines[$i] -match '^\s+default:\s*' -and $i -ne $keep){ continue }
-            [void]$out.Add($lines[$i])
-        }
         $backup=$path+'.before-agentport-settings-repair'
-        if(-not(Test-Path -LiteralPath $backup)){ Copy-Item -LiteralPath $path -Destination $backup -Force }
-        [IO.File]::WriteAllText($path,($out -join "`r`n"),([Text.UTF8Encoding]::new($false)))
-        if($null -ne $LogBox){ Set-Log 'Removed duplicate Harness preset settings. The original settings file was backed up.' 'ok' }
-        return $true
+        $changed=Invoke-AgentPortYamlSettingsMutation -Path $path -Operations @([pscustomobject]@{kind='repair'}) -BackupPath $backup -ErrorAction Stop
+        if($changed -and $null -ne $LogBox){Set-Log 'Repaired duplicate Harness settings maps. The original settings file was backed up.' 'ok'}
+        return [bool]$changed
     } catch {
-        if($null -ne $LogBox){ Set-Log ('Could not repair Harness settings: '+$_.Exception.Message) 'error' }
-        return $false
+        if($null -ne $LogBox){Set-Log ('Could not repair Harness settings: '+$_.Exception.Message) 'error'}
+        throw 'Harness settings could not be repaired safely.'
     }
 }
 
 function Update-HarnessSettings([string]$Model,[string]$DisplayName,[int]$Context,[int]$MaxTokens){
     Ensure-ConfigDir
-    Repair-HarnessSettingsFile | Out-Null
-    $safeModel=$Model.Replace("'","''")
-    $safeName=$DisplayName.Replace("'","''")
-    if(-not (Test-Path -LiteralPath $script:SettingsPath)){
-        $fresh=@"
-llm-pi-ai:
-  providers:
-    agentport-local:
-      displayName: AgentPort Local
-      apiKeyEnv: TEXTGEN_API_KEY
-      api: openai-completions
-      baseURL: http://127.0.0.1:5100/v1
-      defaultInput:
-        - text
-      timeoutMs: 3600000
-      streamIdleTimeoutMs: 3600000
-      websocketConnectTimeoutMs: 3600000
-      retryPolicy:
-        mode: normal
-        maxRetries: 0
-      models:
-        - id: '$safeModel'
-          name: '$safeName'
-          contextWindow: $Context
-          maxTokens: $MaxTokens
-agent-default-model:
-  provider: agentport-local
-  model: '$safeModel'
-"@
-        [IO.File]::WriteAllText($script:SettingsPath,$fresh,([System.Text.UTF8Encoding]::new($false)))
-        return
-    }
-    $content = Get-Content -LiteralPath $script:SettingsPath -Raw
-    if($content -notmatch '(?m)^\s{4}agentport-local:\s*$'){
-        $provider=@"
-    agentport-local:
-      displayName: AgentPort Local
-      apiKeyEnv: TEXTGEN_API_KEY
-      api: openai-completions
-      baseURL: http://127.0.0.1:5100/v1
-      defaultInput:
-        - text
-      timeoutMs: 3600000
-      streamIdleTimeoutMs: 3600000
-      websocketConnectTimeoutMs: 3600000
-      retryPolicy:
-        mode: normal
-        maxRetries: 0
-      models:
-        - id: '$safeModel'
-          name: '$safeName'
-          contextWindow: $Context
-          maxTokens: $MaxTokens
-"@
-        if($content -match '(?m)^\s{2}providers:\s*$'){
-            $content=[regex]::Replace($content,'(?m)^(\s{2}providers:\s*\r?\n)',('${1}'+$provider+"`n"),1)
-        } else {
-            $content="llm-pi-ai:`n  providers:`n$provider`n"+$content
-        }
-    } else {
-        $escaped = [regex]::Escape($Model)
-        if($content.Contains($Model)){
-            $content = [regex]::Replace($content, "(- id:\s*['`"]?$escaped['`"]?\s+name:\s*[^\r\n]+\s+contextWindow:\s*)\d+", ('${1}'+$Context))
-            $content = [regex]::Replace($content, "(- id:\s*['`"]?$escaped['`"]?[\s\S]*?contextWindow:\s*$Context[\s\S]*?maxTokens:\s*)\d+", ('${1}'+$MaxTokens))
-        } else {
-            $block = "        - id: '$safeModel'`n          name: '$safeName'`n          contextWindow: $Context`n          maxTokens: $MaxTokens`n"
-            $content = [regex]::Replace($content, '(agentport-local:\s*[\r\n]+(?:[ \t]+[^\r\n]*[\r\n]+)*?[ \t]+models:\s*[\r\n]+)', ('${1}'+$block),1)
-        }
-    }
-    if($content -match '(?m)^agent-default-model:\s*$'){
-        $content = [regex]::Replace($content, '(agent-default-model:\s*[\r\n]+\s*provider:\s*)[^\r\n]+([\r\n]+\s*model:\s*)[^\r\n]+', ('${1}agentport-local${2}'+("'$safeModel'")))
-    } else {
-        $content += "`nagent-default-model:`n  provider: agentport-local`n  model: '$safeModel'`n"
-    }
-    [IO.File]::WriteAllText($script:SettingsPath,$content,([System.Text.UTF8Encoding]::new($false)))
+    [void](Set-AgentPortHarnessSettings -Path $script:SettingsPath -Model $Model -DisplayName $DisplayName -Context $Context -MaxTokens $MaxTokens)
 }
+
 
 # --- AgentPort RTX 4080/NInfer backend ---------------------------------------
 
@@ -2385,6 +2290,7 @@ function Start-TextGen {
 function Start-Harness {
     Ensure-AgentPortRuntimeDirs
     Repair-HarnessSettingsFile | Out-Null
+    Repair-AgentPortPresetCompatibility
     $root=[string]$script:Config.harness_root
     if(-not (Test-Path -LiteralPath $root)){ New-Item -ItemType Directory -Force -Path $root | Out-Null }
     Prepare-IsolatedHarnessSkills
@@ -3724,6 +3630,35 @@ if($SmokeTest){
         }
     })
 }
+if($IntegrationCurrentModel){
+    $Window.Add_ContentRendered({
+        Start-UnifiedStack
+        $script:IntegrationDeadline=(Get-Date).AddMinutes(5)
+        $script:IntegrationCheck=[Windows.Threading.DispatcherTimer]::new()
+        $script:IntegrationCheck.Interval=[TimeSpan]::FromSeconds(2)
+        $script:IntegrationCheck.Add_Tick({
+            try {
+                if($script:LaunchPhase -eq 7 -and (Test-Port 3080)){
+                    $url=Get-HarnessStartupUrl
+                    if(-not $url){return}
+                    $response=Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5
+                    if($response.StatusCode -ne 200){throw 'Harness page did not return HTTP 200.'}
+                    $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply with only: READY'});max_tokens=16;stream=$false} | ConvertTo-Json -Depth 5
+                    $completion=Invoke-RestMethod 'http://127.0.0.1:5100/v1/chat/completions' -Method Post -Headers @{Authorization='Bearer local-textgen'} -ContentType 'application/json' -Body $body -TimeoutSec 90
+                    if(-not $completion.choices[0].message.content){throw 'Selected model returned no completion.'}
+                    & (Join-Path $PSScriptRoot 'ninfer-4080\Test-AgentPortHarnessPrompt.ps1') -StartupUrl $url -ExpectedModel $script:PendingModel | ForEach-Object {Write-Host $_}
+                    Write-Host ('Current-model integration PASS: '+[IO.Path]::GetFileName($script:PendingModel)+'; Harness HTTP 200; backend completion: '+$completion.choices[0].message.content)
+                    $script:IntegrationCheck.Stop();$Window.Close();return
+                }
+                if((Get-Date) -gt $script:IntegrationDeadline){throw 'Current-model integration timed out.'}
+            } catch {
+                Write-Host ('Current-model integration FAIL: '+$_.Exception.Message)
+                $script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close()
+            }
+        })
+        $script:IntegrationCheck.Start()
+    })
+}
 if($IntegrationTest){
     $Window.Add_ContentRendered({
         try {Start-AgentPortTeam}catch{Write-Host ('Integration start failed: '+$_.Exception.Message);$script:IntegrationFailed=$true;$Window.Close();return}
@@ -3751,7 +3686,7 @@ if($IntegrationTest){
     })
 }
 $Window.Add_ContentRendered({
-    if(-not $SmokeTest -and -not $IntegrationTest){
+    if(-not $SmokeTest -and -not $IntegrationTest -and -not $IntegrationCurrentModel){
         $Window.WindowState='Normal'
         $Window.Topmost=$true
         [void]$Window.Activate()
@@ -3760,4 +3695,4 @@ $Window.Add_ContentRendered({
     }
 })
 [void]$Window.ShowDialog()
-if($IntegrationTest -and $script:IntegrationFailed){exit 1}
+if(($IntegrationTest -or $IntegrationCurrentModel) -and $script:IntegrationFailed){exit 1}

@@ -349,47 +349,7 @@ function Install-AgentPortNInfer([bool]$ShowCompletion=$true) {
 function Update-NInferHarnessSettings {
     param([int]$Context,[int]$MaxTokens=4096)
     Ensure-ConfigDir
-    $provider=@"
-    ninfer-local:
-      displayName: NInfer RTX 4080
-      apiKeyEnv: NINFER_API_KEY
-      api: openai-completions
-      baseURL: http://127.0.0.1:5100/v1
-      defaultInput:
-        - text
-      compat:
-        supportsDeveloperRole: false
-        maxTokensField: max_tokens
-      timeoutMs: 3600000
-      streamIdleTimeoutMs: 3600000
-      websocketConnectTimeoutMs: 3600000
-      retryPolicy:
-        mode: normal
-        maxRetries: 0
-      models:
-        - id: 'qwen3.8-27b-minq4'
-          name: 'Qwen3.8 27B min-Q4 (NInfer MTP3)'
-          contextWindow: $Context
-          maxTokens: $MaxTokens
-"@
-    if(Test-Path -LiteralPath $script:SettingsPath){$content=Get-Content -LiteralPath $script:SettingsPath -Raw}else{$content="llm-pi-ai:`n  providers:`n"}
-    $legacyModel="(?m)^        - id:\s*['`"]?qwen3\.8-27b-minq4['`"]?\s*\r?\n(?:^          [^\r\n]*(?:\r?\n|$))*"
-    $content=[regex]::Replace($content,$legacyModel,'')
-    $legacyProviderPattern='(?ms)^    textgen-local:\s*\r?\n.*?(?=^    [A-Za-z0-9][A-Za-z0-9_-]*:\s*$|^[A-Za-z0-9][A-Za-z0-9_-]*:\s*$|\z)'
-    $legacyProvider=[regex]::Match($content,$legacyProviderPattern)
-    if($legacyProvider.Success -and $legacyProvider.Value -match '(?m)^      models:\s*$' -and $legacyProvider.Value -notmatch '(?m)^        - id:'){
-        $content=$content.Remove($legacyProvider.Index,$legacyProvider.Length)
-    }
-    $providerPattern='(?ms)^    ninfer-local:\s*\r?\n.*?(?=^    [A-Za-z0-9][A-Za-z0-9_-]*:\s*$|^[A-Za-z0-9][A-Za-z0-9_-]*:\s*$|\z)'
-    if($content -match $providerPattern){
-        $content=[regex]::Replace($content,$providerPattern,$provider+"`n",1)
-    } elseif($content -match '(?m)^\s{2}providers:\s*$'){
-        $content=[regex]::Replace($content,'(?m)^(\s{2}providers:\s*\r?\n)',('${1}'+$provider+"`n"),1)
-    } else {$content="llm-pi-ai:`n  providers:`n$provider`n"+$content}
-    if($content -match '(?m)^agent-default-model:\s*$'){
-        $content=[regex]::Replace($content,'(agent-default-model:\s*[\r\n]+\s*provider:\s*)[^\r\n]+([\r\n]+\s*model:\s*)[^\r\n]+',('${1}ninfer-local${2}'+"'qwen3.8-27b-minq4'"),1)
-    } else {$content+="`nagent-default-model:`n  provider: ninfer-local`n  model: 'qwen3.8-27b-minq4'`n"}
-    [IO.File]::WriteAllText($script:SettingsPath,$content,([Text.UTF8Encoding]::new($false)))
+    [void](Set-AgentPortNInferSettings -Path $script:SettingsPath -Context $Context -MaxTokens $MaxTokens)
 }
 
 function New-NInferHarnessPatch {

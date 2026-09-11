@@ -2,6 +2,7 @@ param([string]$HarnessRoot='')
 $ErrorActionPreference='Stop'
 if(-not $HarnessRoot){$HarnessRoot=[string](Get-Content (Join-Path $env:USERPROFILE '.dsh\launcher_config.json') -Raw | ConvertFrom-Json).harness_root}
 . (Join-Path $PSScriptRoot 'NInfer.Runtime.ps1')
+. (Join-Path $PSScriptRoot 'AgentPort.Settings.ps1')
 . (Join-Path $PSScriptRoot 'AgentPort.NInfer.ps1')
 . (Join-Path $PSScriptRoot 'AgentPort.Presets.ps1')
 . (Join-Path $PSScriptRoot 'AgentPort.Team.ps1')

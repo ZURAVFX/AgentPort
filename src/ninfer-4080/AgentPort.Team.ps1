@@ -45,7 +45,7 @@ function Install-AgentPortTeamPreset {
         $text=[regex]::Replace($text,'(?ms)^- id: '+$id+'\r?\n.*?(?=^- id: |\z)','')
     }
     $persona=@'
-    text: |-
+    prefix: |-
       You are a practical local assistant. Complete the user's task using the available tools. Inspect briefly, act, and verify. Continue through ordinary tool results until the task is complete; do not require the user to say continue. Ask only for a material missing choice or required permission. Keep replies short and stop when done.
       Use ComfyUI and Blender MCP tools directly. They do not require a corresponding skill. Inspect installed models/nodes or the scene before editing. Never claim success without a tool result. For filesystem tasks use the filesystem tools. Never delete or overwrite unrelated work. If a tool fails, try one focused correction, then report the actual blocker. Do not install extra skills or delegate routine tasks.
 '@
@@ -58,15 +58,7 @@ function Install-AgentPortTeamPreset {
     if(Test-Path $file){Copy-Item -LiteralPath $file -Destination ($file+'.backup') -Force}
     [IO.File]::WriteAllText($file,$text,[Text.UTF8Encoding]::new($false))
     [IO.File]::WriteAllText((Join-Path $root 'preset.yml'),"name: AgentPort Fast`ndescription: Action-first local agent with filesystem, ComfyUI and Blender tools.`norder: 0`n",[Text.UTF8Encoding]::new($false))
-    $settings=[IO.File]::ReadAllText($script:SettingsPath)
-    Copy-Item -LiteralPath $script:SettingsPath -Destination ($script:SettingsPath+'.before-team') -Force
-    if($settings -match '(?m)^agent-presets:\s*$'){
-        $settings=[regex]::Replace($settings,'(?ms)^agent-presets:\s*\r?\n.*?(?=^\S|\z)',{param($m)
-            if($m.Value -match '(?m)^  default:') {return [regex]::Replace($m.Value,'(?m)^  default:[^\r\n]*','  default: agentport-fast')}
-            return $m.Value.TrimEnd()+"`n  default: agentport-fast`n"
-        })
-    }else{$settings+="`nagent-presets:`n  default: agentport-fast`n"}
-    [IO.File]::WriteAllText($script:SettingsPath,$settings,[Text.UTF8Encoding]::new($false))
+    [void](Set-AgentPortPresetDefault -Path $script:SettingsPath -Preset 'agentport-fast' -BackupSuffix '.before-team')
 }
 
 function Start-AgentPortTeam {

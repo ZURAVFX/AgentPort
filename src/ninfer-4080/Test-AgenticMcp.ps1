@@ -2,6 +2,7 @@ param([string]$HarnessRoot,[string]$ComfyUrl='http://127.0.0.1:8188',[int]$Conte
 $ErrorActionPreference='Stop'
 Add-Type -AssemblyName System.Windows.Forms
 . (Join-Path $PSScriptRoot 'NInfer.Runtime.ps1')
+. (Join-Path $PSScriptRoot 'AgentPort.Settings.ps1')
 . (Join-Path $PSScriptRoot 'AgentPort.NInfer.ps1')
 . (Join-Path $PSScriptRoot 'AgentPort.Mcp.ps1')
 . (Join-Path $PSScriptRoot 'AgentPort.Presets.ps1')

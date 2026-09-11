@@ -10,11 +10,11 @@ import (
 	"unsafe"
 )
 
-//go:embed AgentPort-runtime-v1.7.0-4080.ps1 ninfer-4080/*.ps1 ninfer-4080/*.cmd ninfer-4080/*.py
+//go:embed AgentPort-runtime-v1.7.0-4080.ps1 ninfer-4080/*.ps1 ninfer-4080/*.cmd ninfer-4080/*.py ninfer-4080/*.js ninfer-4080/vendor/yaml
 var files embed.FS
 
 func main() {
-	root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v2.2.0")
+	root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v2.2.1")
 	err := fs.WalkDir(files, ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
@@ -43,6 +43,9 @@ func main() {
 	}
 	if len(os.Args) > 1 && os.Args[1] == "--integration-test" {
 		args = append(args, "-IntegrationTest")
+	}
+	if len(os.Args) > 1 && os.Args[1] == "--integration-current-model" {
+		args = append(args, "-IntegrationCurrentModel")
 	}
 	command := exec.Command("powershell.exe", args...)
 	command.SysProcAttr = &syscall.SysProcAttr{HideWindow: true}
