@@ -113,6 +113,7 @@ function Start-AgentPortTeam {
         $logs=Join-Path $script:AppDataDir 'team-logs';New-Item -ItemType Directory -Force -Path $logs | Out-Null
         Set-LaunchPhase 3 'Loading Qwen3-Coder' '48k context, action-first preset and protected GPU headroom. ComfyUI and Blender remain open.' 65
         $script:TextGenProcess=Start-Process (Get-AgentPortTeamRuntime) -ArgumentList @('-m',('"'+$model+'"'),'--host','127.0.0.1','--port','5100','--api-key','local-textgen','--alias','agentport-fast-qwen3-coder','-c','49152','-ngl','99','--fit-target','768','-ctk','q4_0','-ctv','q4_0','--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'llama.out.log') -RedirectStandardError (Join-Path $logs 'llama.err.log')
+        $script:TextGenOwnership=Get-AgentPortProcessRecord ([int]$script:TextGenProcess.Id) $script:TextGenProcess
         $clock=[Diagnostics.Stopwatch]::StartNew()
         while($true){
             $script:TextGenProcess.Refresh()

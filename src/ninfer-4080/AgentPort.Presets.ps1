@@ -46,8 +46,9 @@ order: 1
         $settingsText=[IO.File]::ReadAllText($settings,[Text.Encoding]::UTF8)
         Copy-Item -LiteralPath $settings -Destination ($settings+'.before-zura-low-thinking') -Force
         if($settingsText -match '(?m)^agent-presets:\s*$'){
-            $next=[regex]::Replace($settingsText,'(?m)(^agent-presets:\s*\r?\n\s+default:\s*)[^\r\n]+','${1}zura-low-thinking',1)
-            if($next -eq $settingsText){$next=$settingsText.TrimEnd()+"`r`n  default: zura-low-thinking`r`n"}
+            $defaultPattern='(?m)(^agent-presets:\s*\r?\n\s+default:\s*)[^\r\n]+'
+            $next=[regex]::Replace($settingsText,$defaultPattern,'${1}zura-low-thinking',1)
+            if($next -eq $settingsText -and $settingsText -notmatch '(?m)^\s+default:\s*'){$next=$settingsText.TrimEnd()+"`r`n  default: zura-low-thinking`r`n"}
             $settingsText=$next
         }
         else {$settingsText=$settingsText.TrimEnd()+"`r`nagent-presets:`r`n  default: zura-low-thinking`r`n"}

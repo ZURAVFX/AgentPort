@@ -1,38 +1,220 @@
 # NInfer is selected as its own model in AgentPort's existing model selector.
-function Stop-AgentPortProcess {
-    param($Process)
-    if(-not $Process){return}
+#
+# Stop ownership is intentionally conservative. A listening port is only a
+# lookup hint: it never grants permission to terminate a process. Every target
+# below carries PID, creation time, executable path and command line captured
+# before the stop starts. The same fields must still match immediately before
+# termination, which prevents PID reuse from killing a newer unrelated process.
+
+function ConvertTo-AgentPortStopPath {
+    param([string]$Path)
+    if([string]::IsNullOrWhiteSpace($Path)){return ''}
+    try{return [IO.Path]::GetFullPath($Path).TrimEnd('\').ToLowerInvariant()}catch{return $Path.TrimEnd('\').ToLowerInvariant()}
+}
+
+function ConvertTo-AgentPortCreationTime {
+    param($Value)
+    if($null -eq $Value){return $null}
     try {
-        $Process.Refresh()
-        if($Process.HasExited){return}
-        $current=Get-Process -Id $Process.Id -ErrorAction SilentlyContinue
-        if($current -and $current.StartTime -eq $Process.StartTime){
-            $Process.Kill()
-            try{$Process.WaitForExit(5000)|Out-Null}catch{}
-        }
-    } catch {
-        # A process can disappear, or Windows can revoke its query handle,
-        # between the refresh and stop. The port-owned child is handled below.
+        if($Value -is [datetime]){return ([datetime]$Value).ToUniversalTime()}
+        return [Management.ManagementDateTimeConverter]::ToDateTime([string]$Value).ToUniversalTime()
+    } catch { try{return ([datetime]$Value).ToUniversalTime()}catch{return $null} }
+}
+
+function Get-AgentPortProcessRecord {
+    param([int]$ProcessId,[object]$Process)
+    if($ProcessId -le 0 -and $Process){$ProcessId=[int]$Process.Id}
+    if($ProcessId -le 0){return $null}
+    try{$cim=Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop}catch{return $null}
+    if(-not $cim){return $null}
+    $start=ConvertTo-AgentPortCreationTime $cim.CreationDate
+    if(-not $start -and $Process){try{$start=([datetime]$Process.StartTime).ToUniversalTime()}catch{}}
+    [pscustomobject]@{
+        Pid=[int]$cim.ProcessId; ParentPid=[int]$cim.ParentProcessId; StartTime=$start
+        ExecutablePath=[string]$cim.ExecutablePath; CommandLine=[string]$cim.CommandLine
+        Depth=0
     }
+}
+
+function Get-AgentPortProcessRecords {
+    param([object[]]$Records)
+    if($null -ne $Records){return @($Records|ForEach-Object{[pscustomobject]$_})}
+    try {
+        return @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+            [pscustomobject]@{
+                Pid=[int]$_.ProcessId;ParentPid=[int]$_.ParentProcessId;StartTime=(ConvertTo-AgentPortCreationTime $_.CreationDate)
+                ExecutablePath=[string]$_.ExecutablePath;CommandLine=[string]$_.CommandLine;Depth=0
+            }
+        })
+    } catch {return @()}
+}
+
+function Test-AgentPortProcessIdentity {
+    param([Parameter(Mandatory)]$Expected,[object[]]$Records)
+    if(-not $Expected -or [int]$Expected.Pid -le 0){return $false}
+    $current=$null
+    if($Records){$current=@($Records|Where-Object{[int]$_.Pid -eq [int]$Expected.Pid}|Select-Object -First 1)}
+    if($current -is [array]){$current=$current|Select-Object -First 1}
+    if(-not $current){$current=Get-AgentPortProcessRecord ([int]$Expected.Pid)}
+    if(-not $current){return $false}
+    $expectedStart=ConvertTo-AgentPortCreationTime $Expected.StartTime
+    $currentStart=ConvertTo-AgentPortCreationTime $current.StartTime
+    if(-not $expectedStart -or -not $currentStart -or $expectedStart.Ticks -ne $currentStart.Ticks){return $false}
+    if((ConvertTo-AgentPortStopPath ([string]$Expected.ExecutablePath)) -ne (ConvertTo-AgentPortStopPath ([string]$current.ExecutablePath))){return $false}
+    if([string]$Expected.CommandLine -ne [string]$current.CommandLine){return $false}
+    return $true
+}
+
+function Get-AgentPortProcessDescendants {
+    param([Parameter(Mandatory)]$Root,[Parameter(Mandatory)][object[]]$Records)
+    $result=New-Object System.Collections.Generic.List[object]
+    $queue=New-Object System.Collections.Generic.Queue[object]
+    $queue.Enqueue([pscustomobject]@{Record=$Root;Depth=0})
+    while($queue.Count -gt 0){
+        $item=$queue.Dequeue()
+        foreach($child in @($Records|Where-Object{[int]$_.ParentPid -eq [int]$item.Record.Pid})){
+            if([int]$child.Pid -eq [int]$Root.Pid -or @($result|Where-Object{[int]$_.Pid -eq [int]$child.Pid}).Count -gt 0){continue}
+            $copy=[pscustomobject]@{Pid=[int]$child.Pid;ParentPid=[int]$child.ParentPid;StartTime=$child.StartTime;ExecutablePath=[string]$child.ExecutablePath;CommandLine=[string]$child.CommandLine;Depth=([int]$item.Depth+1)}
+            [void]$result.Add($copy);$queue.Enqueue([pscustomobject]@{Record=$copy;Depth=$copy.Depth})
+        }
+    }
+    return $result.ToArray()
+}
+
+function Get-AgentPortHarnessCachedEntries {
+    param([string]$NpmCacheRoot)
+    $entries=New-Object System.Collections.Generic.List[string]
+    if(-not $NpmCacheRoot -or -not (Test-Path -LiteralPath $NpmCacheRoot)){return @()}
+    try {
+        Get-ChildItem -LiteralPath (Join-Path $NpmCacheRoot '_npx') -Filter package.json -File -Recurse -ErrorAction SilentlyContinue |
+            Where-Object {$_.FullName -match '(?i)node_modules\\@deepseek-ai\\dsh\\package\.json'} |
+            Sort-Object LastWriteTime -Descending |
+            ForEach-Object {
+                $entry=Join-Path $_.Directory.FullName 'lib\bin.js'
+                if(Test-Path -LiteralPath $entry){[void]$entries.Add((ConvertTo-AgentPortStopPath $entry))}
+            }
+    } catch {}
+    return @($entries.ToArray()|Select-Object -Unique)
+}
+
+function Test-AgentPortHarnessCachedRecord {
+    param([Parameter(Mandatory)]$Record,[string[]]$CachedEntries,[string]$PortableNodeDir)
+    $exe=ConvertTo-AgentPortStopPath ([string]$Record.ExecutablePath)
+    # npx may resolve the cached entry through the portable runtime, an
+    # existing system Node install, or nvm. The executable identity therefore
+    # requires a real node.exe, while ownership is proven by the exact cached
+    # AgentPort dsh lib/bin.js path below. This keeps unrelated Node apps out.
+    if(-not $exe -or ([IO.Path]::GetFileName($exe) -notmatch '^(?i)node\.exe$')){return $false}
+    $command=([string]$Record.CommandLine).Replace('/','\')
+    if($command -notmatch '(?i)(^|\s|["''])web(["'']|\s|$)'){return $false}
+    foreach($entry in @($CachedEntries)){
+        $needle=[string]$entry
+        if($needle -and (ConvertTo-AgentPortStopPath $command).Contains($needle)){return $true}
+    }
+    return $false
+}
+
+function Test-AgentPortHarnessWrapperRecord {
+    param([Parameter(Mandatory)]$Record,[string]$HarnessRoot,[string]$NpmCacheRoot)
+    $command=[string]$Record.CommandLine
+    if([string]::IsNullOrWhiteSpace($command)){return $false}
+    $hasWeb=$command -match '(?i)(^|\s|["''])web(["'']|\s|$)'
+    $hasCache=($NpmCacheRoot -and (ConvertTo-AgentPortStopPath $command).Contains((ConvertTo-AgentPortStopPath $NpmCacheRoot)))
+    $hasRoot=($HarnessRoot -and (ConvertTo-AgentPortStopPath $command).Contains((ConvertTo-AgentPortStopPath $HarnessRoot)))
+    return [bool]($hasWeb -and ($hasCache -or $hasRoot) -and ($command -match '(?i)(npx|dsh|node|cmd)'))
+}
+
+function Test-AgentPortBackendRecord {
+    param([Parameter(Mandatory)]$Record,[string]$TextGenRoot,[string]$ManagedRuntimeRoot)
+    $command=[string]$Record.CommandLine
+    $exe=ConvertTo-AgentPortStopPath ([string]$Record.ExecutablePath)
+    if($command -match '(?i)server\.py' -and $TextGenRoot -and $exe.StartsWith((ConvertTo-AgentPortStopPath $TextGenRoot))){return $true}
+    if($command -match '(?i)llama-server' -and $ManagedRuntimeRoot -and ($exe.StartsWith((ConvertTo-AgentPortStopPath $ManagedRuntimeRoot)) -or $command.ToLowerInvariant().Contains((ConvertTo-AgentPortStopPath $ManagedRuntimeRoot)))){return $true}
+    return $false
+}
+
+function Get-AgentPortStopPlan {
+    param(
+        [Parameter(Mandatory)][ValidateSet('backend','harness')][string]$Kind,
+        [Parameter(Mandatory)][int]$Port,
+        [object]$OwnedProcess,
+        [object[]]$ProcessRecords,
+        [int[]]$ListenerPids,
+        [string]$HarnessRoot,
+        [string]$NpmCacheRoot,
+        [string]$PortableNodeDir,
+        [string]$TextGenRoot,
+        [string]$ManagedRuntimeRoot
+    )
+    $records=Get-AgentPortProcessRecords $ProcessRecords
+    $owned=$null
+    $ownerExpected=$null
+    if($OwnedProcess){
+        if($OwnedProcess.Pid -and $OwnedProcess.StartTime -and $OwnedProcess.CommandLine -and $OwnedProcess.ExecutablePath){
+            $ownerExpected=[pscustomobject]@{Pid=[int]$OwnedProcess.Pid;ParentPid=[int]$OwnedProcess.ParentPid;StartTime=$OwnedProcess.StartTime;ExecutablePath=[string]$OwnedProcess.ExecutablePath;CommandLine=[string]$OwnedProcess.CommandLine;Depth=0}
+        } elseif($OwnedProcess.Id){$ownerExpected=Get-AgentPortProcessRecord ([int]$OwnedProcess.Id) $OwnedProcess}
+        if($ownerExpected){
+            $freshOwner=@($records|Where-Object{[int]$_.Pid -eq [int]$ownerExpected.Pid}|Select-Object -First 1)
+            if($freshOwner -is [array]){$freshOwner=$freshOwner|Select-Object -First 1}
+            if($freshOwner -and (Test-AgentPortProcessIdentity $ownerExpected $freshOwner)){$owned=$freshOwner}
+        }
+    }
+    $targets=New-Object System.Collections.Generic.List[object]
+    $cached=if($Kind -eq 'harness'){@(Get-AgentPortHarnessCachedEntries $NpmCacheRoot)}else{@()}
+    if($owned -and (Test-AgentPortProcessIdentity $owned $records)){
+        [void]$targets.Add($owned)
+        $descendants=Get-AgentPortProcessDescendants $owned $records
+        foreach($child in $descendants){
+            $valid=if($Kind -eq 'harness'){(Test-AgentPortHarnessCachedRecord $child $cached $PortableNodeDir) -or (Test-AgentPortHarnessWrapperRecord $child $HarnessRoot $NpmCacheRoot)}else{Test-AgentPortBackendRecord $child $TextGenRoot $ManagedRuntimeRoot}
+            if($valid){[void]$targets.Add($child)}
+        }
+    }
+    $listeners=if($null -ne $ListenerPids){@($ListenerPids)}else{@(& netstat.exe -ano -p TCP 2>$null | ForEach-Object {if($_ -match ('^\s*TCP\s+\S+:'+([regex]::Escape([string]$Port))+ '\s+\S+\s+LISTENING\s+(\d+)\s*$')){[int]$Matches[1]}}|Select-Object -Unique)}
+    foreach($listenerPid in $listeners){
+        $candidate=@($records|Where-Object{[int]$_.Pid -eq [int]$listenerPid}|Select-Object -First 1)
+        if($candidate -is [array]){$candidate=$candidate|Select-Object -First 1}
+        if(-not $candidate){continue}
+        $already=@($targets|Where-Object{[int]$_.Pid -eq [int]$candidate.Pid}).Count -gt 0
+        if($already){continue}
+        # An orphan is only eligible when its executable and exact cached entry
+        # prove ownership. The listener PID by itself is never sufficient.
+        $valid=if($Kind -eq 'harness'){Test-AgentPortHarnessCachedRecord $candidate $cached $PortableNodeDir}else{Test-AgentPortBackendRecord $candidate $TextGenRoot $ManagedRuntimeRoot}
+        if($valid -and (Test-AgentPortProcessIdentity $candidate $records)){[void]$targets.Add($candidate)}
+    }
+    $targetArray=@($targets.ToArray()|Sort-Object @{Expression={$_.Depth};Descending=$true},Pid)
+    return [pscustomobject]@{Kind=$Kind;Port=$Port;Processes=$targetArray;ListenerPids=@($listeners);UnownedListenerPids=@($listeners|Where-Object{[int]$_ -notin @($targetArray|ForEach-Object{$_.Pid})})}
+}
+
+function Stop-AgentPortProcess {
+    param($Process,[object]$ExpectedRecord)
+    if(-not $Process -and -not $ExpectedRecord){return $false}
+    $expected=if($ExpectedRecord){$ExpectedRecord}else{Get-AgentPortProcessRecord ([int]$Process.Id) $Process}
+    if(-not $expected){return $false}
+    if(-not (Test-AgentPortProcessIdentity $expected)){return $false}
+    try {
+        Stop-Process -Id ([int]$expected.Pid) -Force -ErrorAction Stop
+        try{Wait-Process -Id ([int]$expected.Pid) -Timeout 5 -ErrorAction SilentlyContinue}catch{}
+        return $true
+    } catch {return $false}
+}
+
+function Stop-AgentPortStopPlan {
+    param([Parameter(Mandatory)]$Plan)
+    $stopped=New-Object System.Collections.Generic.List[int]
+    foreach($record in @($Plan.Processes)){
+        if(Stop-AgentPortProcess $null $record){[void]$stopped.Add([int]$record.Pid)}
+    }
+    return [pscustomobject]@{StoppedPids=@($stopped.ToArray());UnownedListenerPids=@($Plan.UnownedListenerPids)}
 }
 
 function Stop-VerifiedAgentPortProcess {
     param([int]$Port,[ValidateSet('backend','harness')][string]$Kind)
-    $listeners=@(Get-NetTCPConnection -State Listen -LocalPort $Port -ErrorAction SilentlyContinue)
-    foreach($listener in $listeners){
-        $process=Get-CimInstance Win32_Process -Filter "ProcessId=$($listener.OwningProcess)" -ErrorAction SilentlyContinue
-        if(-not $process){continue}
-        $command=[string]$process.CommandLine
-        $executable=[string]$process.ExecutablePath
-        $allowed=if($Kind -eq 'harness'){
-            $command -like '*dsh web*' -or $command -like '*apps/cli/src/bin.ts*"web"*' -or
-            ($script:Config.harness_root -and $command -like ('*'+[string]$script:Config.harness_root+'*'))
-        } else {
-            $command -like '*llama-server*' -or
-            ($command -like '*server.py*' -and $script:Config.textgen_root -and $executable -like ([string]$script:Config.textgen_root+'*'))
-        }
-        if($allowed){& taskkill.exe /PID $process.ProcessId /T /F | Out-Null}
-    }
+    $harnessRoot=if($script:Config){[string]$script:Config.harness_root}else{''}
+    $textgenRoot=if($script:Config){[string]$script:Config.textgen_root}else{''}
+    $npm=if($script:NpmCacheDir){[string]$script:NpmCacheDir}else{Join-Path $env:LOCALAPPDATA 'AgentPort\npm-cache'}
+    $node=if($script:PortableNodeDir){[string]$script:PortableNodeDir}else{Join-Path $env:LOCALAPPDATA 'AgentPort\node-v22.23.1-win-x64'}
+    $plan=Get-AgentPortStopPlan -Kind $Kind -Port $Port -HarnessRoot $harnessRoot -NpmCacheRoot $npm -PortableNodeDir $node -TextGenRoot $textgenRoot -ManagedRuntimeRoot (Join-Path $env:LOCALAPPDATA 'AgentPort\llama-b10809')
+    return Stop-AgentPortStopPlan $plan
 }
 
 function Stop-StaleNInferInstances {
@@ -99,6 +281,13 @@ function Refresh-NInferControls {
 
 function Update-BackendSelectionUi {
     $selected=Get-SelectedModel
+    if(-not $selected){
+        $PrimaryButton.IsEnabled=$false
+        $PrimaryButton.Content=if($script:ModelScanOperation){'Discovering models...'}else{'Choose a model to start'}
+        $StatusText.Text=if($script:ModelScanOperation){'AgentPort is checking known model locations in the background. You can keep using the window.'}else{'No model is selected. Open Manage models to choose what appears here.'}
+        return
+    }
+    if(-not $script:StopOperation.Active -and $script:LaunchState -eq 'idle'){$PrimaryButton.IsEnabled=$true}
     $ninfer=($selected -and $selected.Source -eq 'NInfer')
     $team=($selected -and $selected.Source -eq 'Team')
     foreach($control in @($CacheCombo,$OffloadCombo,$SpecCombo)){if($control){$control.IsEnabled=-not ($ninfer -or $team)}}

@@ -41,7 +41,7 @@ TextGen is not required. Existing TextGen model folders may still be scanned so 
 The Models page separates three jobs clearly:
 
 - **Recommended:** download and start the tested 16 GB configuration.
-- **Existing models:** tick **Show on Home** for models you want in the Home dropdown. **Delete** permanently removes the selected GGUF after confirmation.
+- **Existing models:** tick **On Home** for the models you want in the Home dropdown. **Show all** and **Untick all** change the discovered models together. **Remove** only forgets a model in AgentPort; its file stays on your drive. The managed recommended model remains available.
 - **Advanced:** import a local GGUF with an optional helper, or inspect and download a quant from Hugging Face.
 
 NInfer remains available as an optional RTX 4080 fast-chat experiment. It requires its own converted model and cannot load arbitrary GGUF or safetensors files. On a 16 GB card it is limited to roughly 16k to 24k context, so the recommended 48k GGUF backend is the default for Harness tools and MCP workflows.
