@@ -118,7 +118,13 @@ function Test-AgentPortHarnessCachedRecord {
     # A locally installed Harness may be launched by pnpm rather than npx. Its
     # node child is still owned when its command points into AgentPort's
     # dedicated Harness root and requests the web service.
-    if($HarnessRoot -and (ConvertTo-AgentPortStopPath $canonicalCommand).Contains((ConvertTo-AgentPortStopPath $HarnessRoot))){return $true}
+    if($HarnessRoot){
+        $harnessPrefix=(ConvertTo-AgentPortStopPath $HarnessRoot).TrimEnd('\')+'\'
+        $canonicalLower=ConvertTo-AgentPortStopPath $canonicalCommand
+        $hasHarnessPath=$canonicalLower.Contains($harnessPrefix)
+        $hasDshEntry=($canonicalLower -match '(?i)(?:node_modules[\\/].*dsh|[\\/]dsh(?:\.cmd|\.js)?(?:[\s"'']|$))')
+        if($hasHarnessPath -and $hasDshEntry){return $true}
+    }
     return $false
 }
 

@@ -38,6 +38,12 @@ try {
     Assert-True (@($orphanPlan.Processes|ForEach-Object{$_.Pid}) -contains 101) 'orphan cached dsh entry is recovered through system Node'
     Assert-True (@($orphanPlan.Processes|ForEach-Object{$_.Pid}) -notcontains 102) 'orphan unrelated Node is preserved'
 
+    $siblingRoot=Join-Path $scratch 'harness-workspace-other'
+    $sibling=New-Record 103 1 $start $nodeExe ('"'+$nodeExe+'" "'+$siblingRoot+'\node_modules\@deepseek-ai\dsh\lib\bin.js" web --no-open')
+    $siblingPlan=Get-AgentPortStopPlan -Kind harness -Port 3080 -ProcessRecords @($sibling) -ListenerPids @(103) -HarnessRoot (Join-Path $scratch 'harness') -NpmCacheRoot $cache -PortableNodeDir (Join-Path $scratch 'portable-node')
+    Assert-True (@($siblingPlan.Processes).Count -eq 0) 'sibling Harness-like path is not treated as AgentPort-owned'
+    Assert-True (@($siblingPlan.UnownedListenerPids) -contains 103) 'sibling Harness-like listener remains unowned'
+
     $reused=New-Record 100 1 $start.AddSeconds(5) $otherExe ('"'+$otherExe+'" unrelated-web-server --port 3080')
     $reusePlan=Get-AgentPortStopPlan -Kind harness -Port 3080 -OwnedProcess $wrapper -ProcessRecords @($reused) -ListenerPids @(100) -HarnessRoot (Join-Path $scratch 'harness') -NpmCacheRoot $cache -PortableNodeDir (Join-Path $scratch 'portable-node')
     Assert-True (@($reusePlan.Processes).Count -eq 0) 'PID reuse fails the exact start/path/command guard'

@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.2.8'
+$script:AppVersion = '2.2.9'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
