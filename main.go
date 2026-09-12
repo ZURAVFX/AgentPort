@@ -21,7 +21,7 @@ import (
 //go:embed AgentPort-runtime-v1.7.0-4080.ps1 ninfer-4080/*.ps1 ninfer-4080/*.cmd ninfer-4080/*.py ninfer-4080/*.js ninfer-4080/vendor/yaml
 var files embed.FS
 
-const appVersion = "2.2.5"
+const appVersion = "2.2.6"
 const releaseAPI = "https://api.github.com/repos/ZURAVFX/AgentPort/releases/latest"
 
 type githubRelease struct {
@@ -164,7 +164,7 @@ func main() {
 	if updateBeforeStart(os.Args[1:]) {
 		return
 	}
-	root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v2.2.5")
+	root := filepath.Join(os.Getenv("LOCALAPPDATA"), "AgentPort", "v2.2.6")
 	err := fs.WalkDir(files, ".", func(path string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
