@@ -22,7 +22,8 @@ try {
     $otherExe='C:\Program Files\Adobe\node.exe'
     $start=(Get-Date).ToUniversalTime()
     $wrapper=New-Record 100 1 $start 'C:\Windows\System32\cmd.exe' ('cmd.exe /c npx --cache "'+$cache+'" @deepseek-ai/dsh@latest web')
-    $cached=New-Record 101 100 $start $nodeExe ('"'+$nodeExe+'" "'+$entry+'" web --no-open') 1
+    $cachedCommandPath=Join-Path $cache '_npx\fixture\node_modules\.bin\..\@deepseek-ai\dsh\lib\bin.js'
+    $cached=New-Record 101 100 $start $nodeExe ('"'+$nodeExe+'" "'+$cachedCommandPath+'" web --no-open') 1
     $unrelated=New-Record 102 1 $start $otherExe ('"'+$otherExe+'" unrelated-web-server --port 3080')
     $records=@($wrapper,$cached,$unrelated)
 

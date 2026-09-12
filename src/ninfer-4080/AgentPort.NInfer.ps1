@@ -98,7 +98,7 @@ function Get-AgentPortHarnessCachedEntries {
 }
 
 function Test-AgentPortHarnessCachedRecord {
-    param([Parameter(Mandatory)]$Record,[string[]]$CachedEntries,[string]$PortableNodeDir)
+    param([Parameter(Mandatory)]$Record,[string[]]$CachedEntries,[string]$PortableNodeDir,[string]$HarnessRoot)
     $exe=ConvertTo-AgentPortStopPath ([string]$Record.ExecutablePath)
     # npx may resolve the cached entry through the portable runtime, an
     # existing system Node install, or nvm. The executable identity therefore
@@ -106,11 +106,19 @@ function Test-AgentPortHarnessCachedRecord {
     # AgentPort dsh lib/bin.js path below. This keeps unrelated Node apps out.
     if(-not $exe -or ([IO.Path]::GetFileName($exe) -notmatch '^(?i)node\.exe$')){return $false}
     $command=([string]$Record.CommandLine).Replace('/','\')
+    # npx commonly invokes the cached package through node_modules\.bin\..\.
+    # Compare the canonical package path as well as the raw command line so
+    # the real Harness child is still owned after its cmd wrapper exits.
+    $canonicalCommand=[regex]::Replace($command,'\\[^\\\s"'']+\\\.\.\\','\\')
     if($command -notmatch '(?i)(^|\s|["''])web(["'']|\s|$)'){return $false}
     foreach($entry in @($CachedEntries)){
         $needle=[string]$entry
-        if($needle -and (ConvertTo-AgentPortStopPath $command).Contains($needle)){return $true}
+        if($needle -and ((ConvertTo-AgentPortStopPath $command).Contains($needle) -or (ConvertTo-AgentPortStopPath $canonicalCommand).Contains($needle))){return $true}
     }
+    # A locally installed Harness may be launched by pnpm rather than npx. Its
+    # node child is still owned when its command points into AgentPort's
+    # dedicated Harness root and requests the web service.
+    if($HarnessRoot -and (ConvertTo-AgentPortStopPath $canonicalCommand).Contains((ConvertTo-AgentPortStopPath $HarnessRoot))){return $true}
     return $false
 }
 
@@ -121,7 +129,8 @@ function Test-AgentPortHarnessWrapperRecord {
     $hasWeb=$command -match '(?i)(^|\s|["''])web(["'']|\s|$)'
     $hasCache=($NpmCacheRoot -and (ConvertTo-AgentPortStopPath $command).Contains((ConvertTo-AgentPortStopPath $NpmCacheRoot)))
     $hasRoot=($HarnessRoot -and (ConvertTo-AgentPortStopPath $command).Contains((ConvertTo-AgentPortStopPath $HarnessRoot)))
-    return [bool]($hasWeb -and ($hasCache -or $hasRoot) -and ($command -match '(?i)(npx|dsh|node|cmd)'))
+    $hasAgentPortPatch=($command -match '(?i)agentport-mcp\.patch\.json')
+    return [bool]($hasWeb -and ($hasCache -or $hasRoot -or $hasAgentPortPatch) -and ($command -match '(?i)(npx|dsh|node|cmd)'))
 }
 
 function Test-AgentPortBackendRecord {
@@ -165,7 +174,7 @@ function Get-AgentPortStopPlan {
         [void]$targets.Add($owned)
         $descendants=Get-AgentPortProcessDescendants $owned $records
         foreach($child in $descendants){
-            $valid=if($Kind -eq 'harness'){(Test-AgentPortHarnessCachedRecord $child $cached $PortableNodeDir) -or (Test-AgentPortHarnessWrapperRecord $child $HarnessRoot $NpmCacheRoot)}else{Test-AgentPortBackendRecord $child $TextGenRoot $ManagedRuntimeRoot}
+            $valid=if($Kind -eq 'harness'){(Test-AgentPortHarnessCachedRecord $child $cached $PortableNodeDir $HarnessRoot) -or (Test-AgentPortHarnessWrapperRecord $child $HarnessRoot $NpmCacheRoot)}else{Test-AgentPortBackendRecord $child $TextGenRoot $ManagedRuntimeRoot}
             if($valid){[void]$targets.Add($child)}
         }
     }
@@ -178,7 +187,7 @@ function Get-AgentPortStopPlan {
         if($already){continue}
         # An orphan is only eligible when its executable and exact cached entry
         # prove ownership. The listener PID by itself is never sufficient.
-        $valid=if($Kind -eq 'harness'){Test-AgentPortHarnessCachedRecord $candidate $cached $PortableNodeDir}else{Test-AgentPortBackendRecord $candidate $TextGenRoot $ManagedRuntimeRoot}
+        $valid=if($Kind -eq 'harness'){Test-AgentPortHarnessCachedRecord $candidate $cached $PortableNodeDir $HarnessRoot}else{Test-AgentPortBackendRecord $candidate $TextGenRoot $ManagedRuntimeRoot}
         if($valid -and (Test-AgentPortProcessIdentity $candidate $records)){[void]$targets.Add($candidate)}
     }
     $targetArray=@($targets.ToArray()|Sort-Object @{Expression={$_.Depth};Descending=$true},Pid)
