@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.2.4'
+$script:AppVersion = '2.2.5'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -2240,9 +2240,9 @@ function Repair-HarnessSettingsFile {
     }
 }
 
-function Update-HarnessSettings([string]$Model,[string]$DisplayName,[int]$Context,[int]$MaxTokens){
+function Update-HarnessSettings([string]$Model,[string]$DisplayName,[int]$Context,[int]$MaxTokens,[bool]$Vision=$false){
     Ensure-ConfigDir
-    [void](Set-AgentPortHarnessSettings -Path $script:SettingsPath -Model $Model -DisplayName $DisplayName -Context $Context -MaxTokens $MaxTokens)
+    [void](Set-AgentPortHarnessSettings -Path $script:SettingsPath -Model $Model -DisplayName $DisplayName -Context $Context -MaxTokens $MaxTokens -Vision $Vision)
 }
 
 
@@ -2895,7 +2895,7 @@ function Start-UnifiedStack {
         $script:Config.active_offload_mode=$offload
         Save-Config
         Prepare-IsolatedHarnessSkills
-        Update-HarnessSettings $m.RelPath $m.Name $ctx $max
+        Update-HarnessSettings $m.RelPath $m.Name $ctx $max (@($m.HelperFiles).Count -gt 0)
         $script:PendingModel=$m.RelPath
         $script:PendingContext=$ctx
 

@@ -106,19 +106,21 @@ function Set-AgentPortHarnessSettings {
         [Parameter(Mandatory=$true)][string]$Model,
         [Parameter(Mandatory=$true)][string]$DisplayName,
         [Parameter(Mandatory=$true)][int]$Context,
-        [Parameter(Mandatory=$true)][int]$MaxTokens
+        [Parameter(Mandatory=$true)][int]$MaxTokens,
+        [Parameter(Mandatory=$false)][bool]$Vision=$false
     )
+    $inputModalities=if($Vision){@('text','image')}else{@('text')}
     $provider=[ordered]@{
         displayName='AgentPort Local'
         apiKeyEnv='TEXTGEN_API_KEY'
         api='openai-completions'
         baseURL='http://127.0.0.1:5100/v1'
-        defaultInput=@('text')
+        defaultInput=$inputModalities
         timeoutMs=3600000
         streamIdleTimeoutMs=3600000
         websocketConnectTimeoutMs=3600000
         retryPolicy=[ordered]@{mode='normal';maxRetries=0}
-        models=@([ordered]@{id=$Model;name=$DisplayName;contextWindow=$Context;maxTokens=$MaxTokens})
+        models=@([ordered]@{id=$Model;name=$DisplayName;contextWindow=$Context;maxTokens=$MaxTokens;inputModalities=$inputModalities})
     }
     $operations=@(
         [pscustomobject]@{kind='ensure-provider';provider='agentport-local';value=$provider}

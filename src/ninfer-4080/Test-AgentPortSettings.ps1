@@ -21,6 +21,11 @@ try {
         Assert-AgentPortSettings ($first -ceq [IO.File]::ReadAllText($fresh)) 'repeated model selection changed settings'
         Assert-AgentPortSettings ([regex]::Matches($first,'(?m)^llm-pi-ai:').Count -eq 1) 'fresh or inline-empty providers created duplicate settings'
     }
+    $visionSettings=Join-Path $scratch 'vision-settings.yaml'
+    [void](Set-AgentPortHarnessSettings -Path $visionSettings -Model 'ridge-model' -DisplayName 'Ridge vision' -Context 49152 -MaxTokens 4096 -Vision $true)
+    $visionText=[IO.File]::ReadAllText($visionSettings)
+    Assert-AgentPortSettings ($visionText -match 'defaultInput:\r?\n\s*- text\r?\n\s*- image') 'vision provider did not advertise image input'
+    Assert-AgentPortSettings ($visionText -match 'inputModalities:\r?\n\s*- text\r?\n\s*- image') 'vision model did not advertise image input'
 
     $settings=Join-Path $scratch 'settings.yaml'
     $backup=$settings+'.before-agentport-settings'
