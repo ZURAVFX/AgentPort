@@ -29,7 +29,7 @@ function Update-AgentPortTeamMetrics {
     if(-not $TokenStats){return}
     if($script:PendingModel -ne 'agentport-fast-qwen3-coder'){$TokenStats.Text='Token speed appears after the recommended agent starts.';return}
     try{
-        $body=(Invoke-WebRequest http://127.0.0.1:5100/metrics -Headers @{Authorization='Bearer local-textgen'} -UseBasicParsing -TimeoutSec 1).Content
+        $body=(Invoke-WebRequest ("http://127.0.0.1:$script:BackendPort/metrics") -Headers @{Authorization='Bearer local-textgen'} -UseBasicParsing -TimeoutSec 1).Content
         $values=@{}
         foreach($match in [regex]::Matches($body,'(?m)^llamacpp:([a-z_]+)\s+([0-9.eE+-]+)\s*$')){$values[$match.Groups[1].Value]=[double]::Parse($match.Groups[2].Value,[Globalization.CultureInfo]::InvariantCulture)}
         $rate=if($values.tokens_predicted_seconds_total -gt 0){$values.tokens_predicted_total/$values.tokens_predicted_seconds_total}else{0}
@@ -101,16 +101,16 @@ function Start-AgentPortTeam {
         Update-HarnessSettings 'agentport-fast-qwen3-coder' 'Qwen3-Coder 30B A3B - AgentPort Fast' 49152 4096
         Install-AgentPortTeamPreset
         Kill-Stack
-        if(Test-Port 5100){throw 'Another app is using port 5100. Close that backend and retry.'}
+        if(Test-Port $script:BackendPort){throw 'Another app is using port 5100. Close that backend and retry.'}
         $logs=Join-Path $script:AppDataDir 'team-logs';New-Item -ItemType Directory -Force -Path $logs | Out-Null
         Set-LaunchPhase 3 'Loading Qwen3-Coder' '48k context, action-first preset and protected GPU headroom. ComfyUI and Blender remain open.' 65
-        $script:TextGenProcess=Start-Process (Get-AgentPortTeamRuntime) -ArgumentList @('-m',('"'+$model+'"'),'--host','127.0.0.1','--port','5100','--api-key','local-textgen','--alias','agentport-fast-qwen3-coder','-c','49152','-ngl','99','--fit-target','768','-ctk','q4_0','-ctv','q4_0','--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'llama.out.log') -RedirectStandardError (Join-Path $logs 'llama.err.log')
+        $script:TextGenProcess=Start-Process (Get-AgentPortTeamRuntime) -ArgumentList @('-m',('"'+$model+'"'),'--host','127.0.0.1','--port',[string]$script:BackendPort,'--api-key','local-textgen','--alias','agentport-fast-qwen3-coder','-c','49152','-ngl','99','--fit-target','768','-ctk','q4_0','-ctv','q4_0','--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'llama.out.log') -RedirectStandardError (Join-Path $logs 'llama.err.log')
         $script:TextGenOwnership=Get-AgentPortProcessRecord ([int]$script:TextGenProcess.Id) $script:TextGenProcess
         $clock=[Diagnostics.Stopwatch]::StartNew()
         while($true){
             $script:TextGenProcess.Refresh()
             if($script:TextGenProcess.HasExited){throw "The model could not load. See $logs\llama.err.log. Close other loaded GPU models and retry."}
-            try{$ready=Invoke-RestMethod http://127.0.0.1:5100/health -TimeoutSec 1;if($ready.status -eq 'ok'){break}}catch{}
+            try{$ready=Invoke-RestMethod ("http://127.0.0.1:$script:BackendPort/health") -TimeoutSec 1;if($ready.status -eq 'ok'){break}}catch{}
             if($clock.Elapsed.TotalMinutes -gt 5){throw 'Model loading timed out. Check Home logs.'}
             [Windows.Forms.Application]::DoEvents();Start-Sleep -Milliseconds 200
         }

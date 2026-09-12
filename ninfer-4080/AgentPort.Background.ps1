@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'AgentPort.Port.ps1')
 # AgentPort background workers.
 #
 # This file deliberately contains no WPF references and no access to launcher
@@ -174,7 +175,7 @@ function Get-AgentPortModelCatalogueCore {
                     try{$rel=$_.FullName.Substring($root.TrimEnd('\').Length).TrimStart('\').Replace('\','/')}catch{$rel=$_.Name}
                     $mainRoot=($root.TrimEnd('\').ToLowerInvariant() -eq ([string]$Snapshot.ModelsRoot).TrimEnd('\').ToLowerInvariant())
                     $modelId=if($mainRoot){$rel}else{$_.FullName}
-                    $helpers=Find-AgentPortRelatedMmprojCore $_.FullName $Snapshot.ModelHelpers
+                    $helpers=@(Find-AgentPortRelatedMmprojCore $_.FullName $Snapshot.ModelHelpers)
                     $helperText=if($helpers.Count -gt 0){' | helper: '+[IO.Path]::GetFileName($helpers[0])}else{''}
                     $source=[string]$rootInfo.Source
                     if($_.FullName -match '(?i)\\models--unsloth--'){$source='Unsloth Desktop'}
@@ -201,13 +202,13 @@ function Test-AgentPortTcpPortCore {
 }
 
 function Get-AgentPortLoadedModelCore {
-    if(-not (Test-AgentPortTcpPortCore 5100 200)){return ''}
+    if(-not (Test-AgentPortTcpPortCore $script:BackendPort 200)){return ''}
     try {
-        $r=Invoke-RestMethod -Uri 'http://127.0.0.1:5100/v1/internal/model/info' -Method Get -Headers @{Authorization='Bearer local-textgen';Accept='application/json'} -TimeoutSec 1 -ErrorAction Stop
+        $r=Invoke-RestMethod -Uri ("http://127.0.0.1:$script:BackendPort/v1/internal/model/info") -Method Get -Headers @{Authorization='Bearer local-textgen';Accept='application/json'} -TimeoutSec 1 -ErrorAction Stop
         if($r.model_name -and [string]$r.model_name -notin @('none','null')){return [string]$r.model_name}
     } catch {}
     try {
-        $r=Invoke-RestMethod -Uri 'http://127.0.0.1:5100/v1/models' -Method Get -Headers @{Authorization='Bearer local-textgen';Accept='application/json'} -TimeoutSec 1 -ErrorAction Stop
+        $r=Invoke-RestMethod -Uri ("http://127.0.0.1:$script:BackendPort/v1/models") -Method Get -Headers @{Authorization='Bearer local-textgen';Accept='application/json'} -TimeoutSec 1 -ErrorAction Stop
         if($r.data -and @($r.data).Count -gt 0){return [string]$r.data[0].id}
     } catch {}
     return ''
@@ -215,9 +216,9 @@ function Get-AgentPortLoadedModelCore {
 
 function Get-AgentPortMetricsCore {
     param([bool]$Enabled)
-    if(-not $Enabled -or -not (Test-AgentPortTcpPortCore 5100 200)){return [pscustomobject]@{Available=$false;Rate=0;Prompt=0;Cached=0;Generated=0;Active=0}}
+    if(-not $Enabled -or -not (Test-AgentPortTcpPortCore $script:BackendPort 200)){return [pscustomobject]@{Available=$false;Rate=0;Prompt=0;Cached=0;Generated=0;Active=0}}
     try {
-        $text=(Invoke-WebRequest -Uri 'http://127.0.0.1:5100/metrics' -Headers @{Authorization='Bearer local-textgen'} -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop).Content
+        $text=(Invoke-WebRequest -Uri ("http://127.0.0.1:$script:BackendPort/metrics") -Headers @{Authorization='Bearer local-textgen'} -UseBasicParsing -TimeoutSec 1 -ErrorAction Stop).Content
         $values=@{}
         foreach($match in [regex]::Matches($text,'(?m)^llamacpp:([a-z_]+)\s+([0-9.eE+-]+)\s*$')){$values[$match.Groups[1].Value]=[double]::Parse($match.Groups[2].Value,[Globalization.CultureInfo]::InvariantCulture)}
         return [pscustomobject]@{Available=$true;Rate=if($values.tokens_predicted_seconds_total -gt 0){$values.tokens_predicted_total/$values.tokens_predicted_seconds_total}else{0};Prompt=$values.prompt_tokens_total;Cached=$values.prompt_tokens_cached_total;Generated=$values.tokens_predicted_total;Active=$values.requests_processing}
@@ -226,7 +227,7 @@ function Get-AgentPortMetricsCore {
 
 function Get-AgentPortRuntimeSnapshotCore {
     param([Parameter(Mandatory)]$Snapshot)
-    $backend=Test-AgentPortTcpPortCore 5100 250
+    $backend=Test-AgentPortTcpPortCore $script:BackendPort 250
     $harness=Test-AgentPortTcpPortCore 3080 250
     $loaded=if($backend){Get-AgentPortLoadedModelCore}else{''}
     $metrics=Get-AgentPortMetricsCore ([bool]$Snapshot.MetricsEnabled)

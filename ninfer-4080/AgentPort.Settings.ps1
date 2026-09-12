@@ -1,3 +1,4 @@
+. (Join-Path $PSScriptRoot 'AgentPort.Port.ps1')
 $script:AgentPortSettingsScriptPath = Join-Path $PSScriptRoot 'AgentPort.Settings.js'
 
 function Get-AgentPortSettingsNodePath {
@@ -109,18 +110,18 @@ function Set-AgentPortHarnessSettings {
         [Parameter(Mandatory=$true)][int]$MaxTokens,
         [Parameter(Mandatory=$false)][bool]$Vision=$false
     )
-    $inputModalities=if($Vision){@('text','image')}else{@('text')}
+    $inputModalities=@(if($Vision){'text';'image'}else{'text'})
     $provider=[ordered]@{
         displayName='AgentPort Local'
         apiKeyEnv='TEXTGEN_API_KEY'
         api='openai-completions'
-        baseURL='http://127.0.0.1:5100/v1'
+        baseURL=("http://127.0.0.1:$script:BackendPort/v1")
         defaultInput=$inputModalities
         timeoutMs=3600000
         streamIdleTimeoutMs=3600000
         websocketConnectTimeoutMs=3600000
         retryPolicy=[ordered]@{mode='normal';maxRetries=0}
-        models=@([ordered]@{id=$Model;name=$DisplayName;contextWindow=$Context;maxTokens=$MaxTokens;inputModalities=$inputModalities})
+        models=@([ordered]@{id=$Model;name=$DisplayName;contextWindow=$Context;maxTokens=$MaxTokens;input=$inputModalities})
     }
     $operations=@(
         [pscustomobject]@{kind='ensure-provider';provider='agentport-local';value=$provider}
@@ -139,7 +140,7 @@ function Set-AgentPortNInferSettings {
         displayName='NInfer RTX 4080'
         apiKeyEnv='NINFER_API_KEY'
         api='openai-completions'
-        baseURL='http://127.0.0.1:5100/v1'
+        baseURL=("http://127.0.0.1:$script:BackendPort/v1")
         defaultInput=@('text')
         compat=[ordered]@{supportsDeveloperRole=$false;maxTokensField='max_tokens'}
         timeoutMs=3600000

@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.2.6'
+$script:AppVersion = '2.2.7'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -157,6 +157,13 @@ function Save-Config {
 }
 
 $script:Config = Load-Config
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Port.ps1')
+$preferredPort=5100
+if($script:Config.backend_port){$preferredPort=[int]$script:Config.backend_port}
+$script:BackendPort=Select-AgentPortBackendPort $preferredPort
+$env:AGENTPORT_BACKEND_PORT=[string]$script:BackendPort
+$script:Config.backend_port=$script:BackendPort
+Save-Config
 # Migrate earlier specialist defaults to the recommended 48k local agent.
 # NInfer remains available from Models as an explicit advanced choice.
 if(($script:Config.last_model -eq 'qwen3.8-27b-minq4' -and [int]$script:Config.active_context_tokens -lt 49152) -or $script:Config.last_model -eq 'agentport-team-ridge27b'){
@@ -1540,13 +1547,13 @@ function Get-InstalledModels {
 
 function Invoke-TextGenApi([string]$Path,[string]$Method='GET',$Body=$null,[int]$TimeoutSec=2){
     $headers = @{ Authorization='Bearer local-textgen'; Accept='application/json' }
-    $params = @{ Uri=('http://127.0.0.1:5100'+$Path); Method=$Method; Headers=$headers; TimeoutSec=$TimeoutSec; ErrorAction='Stop' }
+    $params = @{ Uri=(("http://127.0.0.1:$script:BackendPort")+$Path); Method=$Method; Headers=$headers; TimeoutSec=$TimeoutSec; ErrorAction='Stop' }
     if($null -ne $Body){ $params['ContentType']='application/json'; $params['Body']=($Body | ConvertTo-Json -Depth 8) }
     return Invoke-RestMethod @params
 }
 
 function Get-LoadedModel {
-    if(-not (Test-Port 5100)){ return '' }
+    if(-not (Test-Port $script:BackendPort)){ return '' }
     try {
         $r = Invoke-TextGenApi '/v1/internal/model/info' 'GET' $null 1
         $n = [string]$r.model_name
@@ -1582,7 +1589,7 @@ function Kill-Stack {
     # Windows taskkill tree traversal is not reliable when npx/cmd outlives
     # node, so the captured descendants and listener PIDs are stopped from the
     # explicit plans below. An unrelated listener remains untouched.
-    $backendPlan=Get-AgentPortStopPlan -Kind backend -Port 5100 -OwnedProcess $script:TextGenOwnership -HarnessRoot ([string]$script:Config.harness_root) -NpmCacheRoot ([string]$script:NpmCacheDir) -PortableNodeDir ([string]$script:PortableNodeDir) -TextGenRoot ([string]$script:Config.textgen_root) -ManagedRuntimeRoot (Join-Path $script:AppDataDir 'llama-b10809')
+    $backendPlan=Get-AgentPortStopPlan -Kind backend -Port $script:BackendPort -OwnedProcess $script:TextGenOwnership -HarnessRoot ([string]$script:Config.harness_root) -NpmCacheRoot ([string]$script:NpmCacheDir) -PortableNodeDir ([string]$script:PortableNodeDir) -TextGenRoot ([string]$script:Config.textgen_root) -ManagedRuntimeRoot (Join-Path $script:AppDataDir 'llama-b10809')
     $harnessPlan=Get-AgentPortStopPlan -Kind harness -Port 3080 -OwnedProcess $script:HarnessOwnership -HarnessRoot ([string]$script:Config.harness_root) -NpmCacheRoot ([string]$script:NpmCacheDir) -PortableNodeDir ([string]$script:PortableNodeDir) -TextGenRoot ([string]$script:Config.textgen_root) -ManagedRuntimeRoot (Join-Path $script:AppDataDir 'llama-b10809')
     if($IntegrationTest){Write-Host ('Stop ownership: backend targets='+(@($backendPlan.Processes|ForEach-Object{$_.Pid}) -join ',')+'; Harness targets='+(@($harnessPlan.Processes|ForEach-Object{$_.Pid}) -join ',')+'; unowned listeners='+(@($backendPlan.UnownedListenerPids)+@($harnessPlan.UnownedListenerPids) -join ','))}
     if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
@@ -1590,7 +1597,7 @@ function Kill-Stack {
     Stop-AgentPortStopPlan $harnessPlan | Out-Null
     Stop-StaleNInferInstances
     $stopDeadline=(Get-Date).AddSeconds(8)
-    while(((Test-Port 5100) -or (Test-Port 3080)) -and (Get-Date) -lt $stopDeadline){
+    while(((Test-Port $script:BackendPort) -or (Test-Port 3080)) -and (Get-Date) -lt $stopDeadline){
         [Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 100
     }
@@ -1685,7 +1692,7 @@ function Start-AgentPortStopOperation {
         # must happen inside the worker, before any process is terminated.
         $ninfer=$null
         if($script:NInferState){$ninfer=$script:NInferState|Select-Object Distro,PidFile,Executable,LogDirectory,Launch,Port}
-        $snapshot=[ordered]@{Kind=$Kind;Common=$common;BackendOwner=$script:TextGenOwnership;HarnessOwner=$script:HarnessOwnership;NInfer=$ninfer}
+        $snapshot=[ordered]@{Kind=$Kind;BackendPort=$script:BackendPort;Common=$common;BackendOwner=$script:TextGenOwnership;HarnessOwner=$script:HarnessOwnership;NInfer=$ninfer}
         $payload=[pscustomobject]@{
             SnapshotJson=($snapshot|ConvertTo-Json -Depth 12)
             HelperPath=(Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Background.ps1')
@@ -1705,7 +1712,7 @@ if($snapshot.Kind -in @('backend','all') -and $snapshot.NInfer){
     Stop-NInferService $snapshot.NInfer
 }
 $plans=@()
-if($snapshot.Kind -in @('backend','all')){$plans+=@(Get-AgentPortStopPlan -Kind backend -Port 5100 -OwnedProcess $snapshot.BackendOwner @common)}
+if($snapshot.Kind -in @('backend','all')){$plans+=@(Get-AgentPortStopPlan -Kind backend -Port $snapshot.BackendPort -OwnedProcess $snapshot.BackendOwner @common)}
 if($snapshot.Kind -in @('harness','all')){$plans+=@(Get-AgentPortStopPlan -Kind harness -Port 3080 -OwnedProcess $snapshot.HarnessOwner @common)}
 Invoke-AgentPortStopPlansCore $plans
 '@
@@ -2198,7 +2205,7 @@ function Write-TextGenFlags([string]$Model,[int]$Context,[string]$Cache,[string]
     }
     $lines = @(
         '--api',
-        '--api-port 5100',
+        ("--api-port "+$script:BackendPort),
         '--api-key local-textgen',
         ('--model-dir "{0}"' -f $modelDir),
         ('--model "{0}"' -f $modelName),
@@ -2916,14 +2923,14 @@ function Start-UnifiedStack {
         if($managedRuntime){
             Set-LaunchPhase 4 'Starting GPU backend' 'Loading this GGUF directly with the managed CUDA runtime.' 42
             $logs=Join-Path $script:AppDataDir 'team-logs';New-Item -ItemType Directory -Force -Path $logs | Out-Null
-            $args=@('-m',('"'+$m.FullPath+'"'),'--host','127.0.0.1','--port','5100','--api-key','local-textgen','--alias',$m.RelPath,'-c',$ctx,'-ngl',[string]$script:OffloadModes[$offload].gpu_layers,'-ctk',$cache,'-ctv',$cache,'--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics')
+            $args=@('-m',('"'+$m.FullPath+'"'),'--host','127.0.0.1','--port',[string]$script:BackendPort,'--api-key','local-textgen','--alias',$m.RelPath,'-c',$ctx,'-ngl',[string]$script:OffloadModes[$offload].gpu_layers,'-ctk',$cache,'-ctv',$cache,'--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics')
             if($null -ne $script:OffloadModes[$offload].fit_target){$args+=@('--fit-target',[string]$script:OffloadModes[$offload].fit_target)}
             if($m.HelperFiles -and $m.HelperFiles.Count -gt 0){$args+=@('--mmproj',('"'+$m.HelperFiles[0]+'"'))}
             $script:TextGenProcess=Start-Process $managedRuntime -ArgumentList $args -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'llama.out.log') -RedirectStandardError (Join-Path $logs 'llama.err.log')
             $script:LaunchState='wait_textgen'
             $script:LaunchDeadline=(Get-Date).AddMinutes(5)
             $PrimaryButton.Content='Starting GPU backend...'
-            Set-LaunchPhase 4 'Starting GPU backend' 'Model is loading. Waiting for the local API on port 5100.' 52
+            Set-LaunchPhase 4 'Starting GPU backend' ("Model is loading. Waiting for the local API on port $script:BackendPort.") 52
             Set-Log ('Starting '+$m.Name+' | '+('{0:N0}' -f $ctx)+' tokens | '+$offload)
         } else {
             throw 'The managed GPU backend is unavailable after installation. Check your internet connection, then retry.'
@@ -3007,13 +3014,12 @@ function Poll-Launch {
             try{
                 $script:TextGenProcess.Refresh()
                 if($script:TextGenProcess.HasExited -and -not ($runtime -and $runtime.BackendOnline)){
-                    $root=[string]$script:Config.textgen_root
-                    $err=Get-RecentLogText (Join-Path $root 'logs\textgen.err.log') 10
-                    $out=Get-RecentLogText (Join-Path $root 'logs\textgen.out.log') 6
+                    $err=Get-RecentLogText (Join-Path $script:AppDataDir 'team-logs\llama.err.log') 15
+                    $out=Get-RecentLogText (Join-Path $script:AppDataDir 'team-logs\llama.out.log') 6
                     $detail=if($err){$err}elseif($out){$out}else{('TextGen process exited with code '+$script:TextGenProcess.ExitCode+'.')}
                     $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
             Set-LaunchPhase 4 'GGUF backend exited before API startup' $detail $LaunchProgress.Value 'error'
-                    Set-Log ('TextGen exited before opening port 5100. '+$detail) 'error'
+                    Set-Log ("GGUF backend exited before opening port $script:BackendPort. "+$detail) 'error'
                     return
                 }
             }catch{}
@@ -3021,8 +3027,8 @@ function Poll-Launch {
         if((Get-Date) -gt $script:LaunchDeadline){
             $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
             $root=[string]$script:Config.textgen_root
-            $detail=Get-RecentLogText (Join-Path $root 'logs\textgen.err.log') 10
-            if(-not $detail){$detail='TextGen did not open API port 5100 within five minutes.'}
+            $detail=Get-RecentLogText (Join-Path $script:AppDataDir 'team-logs\llama.err.log') 10
+            if(-not $detail){$detail="GGUF backend did not open API port $script:BackendPort within five minutes."}
             Set-LaunchPhase 4 'TextGen startup timed out' $detail $LaunchProgress.Value 'error'
             Set-Log 'TextGen timed out. Open Runtimes for the exact error log.' 'error'
             return
@@ -3670,7 +3676,7 @@ if($IntegrationCurrentModel){
                     $response=Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5
                     if($response.StatusCode -ne 200){throw 'Harness page did not return HTTP 200.'}
                     $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply with only: READY'});max_tokens=16;stream=$false} | ConvertTo-Json -Depth 5
-                    $completion=Invoke-RestMethod 'http://127.0.0.1:5100/v1/chat/completions' -Method Post -Headers @{Authorization='Bearer local-textgen'} -ContentType 'application/json' -Body $body -TimeoutSec 90
+                    $completion=Invoke-RestMethod ("http://127.0.0.1:$script:BackendPort/v1/chat/completions") -Method Post -Headers @{Authorization='Bearer local-textgen'} -ContentType 'application/json' -Body $body -TimeoutSec 90
                     if(-not $completion.choices[0].message.content){throw 'Selected model returned no completion.'}
                     & (Join-Path $PSScriptRoot 'ninfer-4080\Test-AgentPortHarnessPrompt.ps1') -StartupUrl $url -ExpectedModel $script:PendingModel | ForEach-Object {Write-Host $_}
                     Write-Host ('Current-model integration PASS: '+[IO.Path]::GetFileName($script:PendingModel)+'; Harness HTTP 200; backend completion: '+$completion.choices[0].message.content)
@@ -3693,12 +3699,12 @@ if($IntegrationTest){
         $script:IntegrationCheck=[Windows.Threading.DispatcherTimer]::new()
         $script:IntegrationCheck.Interval=[TimeSpan]::FromSeconds(2)
         $script:IntegrationCheck.Add_Tick({
-            if((Test-Port 5100) -and (Test-Port 3080) -and (Get-LoadedModel) -eq 'agentport-fast-qwen3-coder'){
+            if((Test-Port $script:BackendPort) -and (Test-Port 3080) -and (Get-LoadedModel) -eq 'agentport-fast-qwen3-coder'){
                 if($script:IntegrationStage -ne 'restarted'){
                     Write-Host 'AgentPort integration ready: Team model + Harness; verifying clean stop and restart'
                     Kill-Stack
                     Start-Sleep -Milliseconds 750
-                    if((Test-Port 5100) -or (Test-Port 3080)){Write-Host ('AgentPort integration failed: stop stack left an occupied port (5100='+[bool](Test-Port 5100)+', 3080='+[bool](Test-Port 3080)+')');$script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close();return}
+                    if((Test-Port $script:BackendPort) -or (Test-Port 3080)){Write-Host ('AgentPort integration failed: stop stack left an occupied port (5100='+[bool](Test-Port $script:BackendPort)+', 3080='+[bool](Test-Port 3080)+')');$script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close();return}
                     $script:IntegrationStage='restarted'
                     Start-AgentPortTeam
                     if($script:LaunchState -ne 'wait_harness'){Write-Host 'AgentPort integration restart failed before Harness launch';$script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close()}

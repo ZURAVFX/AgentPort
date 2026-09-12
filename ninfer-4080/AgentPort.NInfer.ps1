@@ -379,7 +379,7 @@ function Start-AgentPortNInfer {
         $PrimaryButton.IsEnabled=$false
         Kill-Stack
         Start-Sleep -Milliseconds 700
-        if((Test-Port 3080) -or (Test-Port 5100)){throw 'A backend started outside AgentPort is still running. Close it, then retry.'}
+        if((Test-Port 3080) -or (Test-Port $script:BackendPort)){throw 'A backend started outside AgentPort is still running. Close it, then retry.'}
         $selectedLabel=[string]$ContextCombo.SelectedItem
         $selectedContext=[int]$script:ContextPresets[$selectedLabel]
                 $context=if($selectedContext -ge 49152){49152}elseif($selectedContext -ge 32768){32768}else{24576}
@@ -391,7 +391,7 @@ function Start-AgentPortNInfer {
         foreach($candidate in $attempts){
             try{
                 $context=[int]$candidate
-                $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3
+                $script:NInferState=Start-NInferService -Distro (Get-AgentPortNInferDistro) -Context $context -Draft 3 -Port $script:BackendPort
                 break
             }catch{
                 $lastCapacityError=$_.Exception.Message
