@@ -3012,7 +3012,7 @@ function Poll-Launch {
                     $out=Get-RecentLogText (Join-Path $root 'logs\textgen.out.log') 6
                     $detail=if($err){$err}elseif($out){$out}else{('TextGen process exited with code '+$script:TextGenProcess.ExitCode+'.')}
                     $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
-                    Set-LaunchPhase 4 'TextGen exited before API startup' $detail $LaunchProgress.Value 'error'
+            Set-LaunchPhase 4 'GGUF backend exited before API startup' $detail $LaunchProgress.Value 'error'
                     Set-Log ('TextGen exited before opening port 5100. '+$detail) 'error'
                     return
                 }
