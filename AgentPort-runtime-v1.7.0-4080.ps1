@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.3.1'
+$script:AppVersion = '2.3.2'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -1700,10 +1700,25 @@ function Open-HarnessFromHome {
             if($script:OpenHarnessWhenReady){Start-Process $url}
             return
         }
-        # Use the active runtime profile, never the unstarted dropdown selection.
-        $script:PendingModel=[string]$script:Config.active_model
-        $script:PendingContext=[int]$script:Config.active_context_tokens
-        if($script:PendingContext -le 0){$script:PendingContext=49152}
+        $selected=Get-SelectedModel
+        $fallbackModel=[string]$script:Config.active_model
+        if(-not $fallbackModel -and $selected){$fallbackModel=[string]$selected.RelPath}
+        if(-not $fallbackModel -and [string]$script:Config.last_model){$fallbackModel=[string]$script:Config.last_model}
+        if(-not $fallbackModel -and $script:HomeModels.Count -gt 0){$fallbackModel=[string]$script:HomeModels[0].RelPath}
+        if(-not $fallbackModel){throw 'Install or select a GGUF model first so Harness has a profile to start.'}
+
+        $fallbackContext=[int]$script:Config.active_context_tokens
+        if(-not $fallbackContext -or -not $script:ContextPresets.Values.Contains($fallbackContext)){
+            $label=[string]$script:Config.last_context
+            if($label -and $script:ContextPresets.ContainsKey($label)){
+                $fallbackContext=[int]$script:ContextPresets[$label]
+            }else{
+                $fallbackContext=49152
+            }
+        }
+
+        $script:PendingModel=$fallbackModel
+        $script:PendingContext=$fallbackContext
         $script:HarnessOnlyLaunch=$true
         $script:LaunchState='wait_harness';$script:LaunchDeadline=(Get-Date).AddMinutes(2)
         $PrimaryButton.IsEnabled=$false
