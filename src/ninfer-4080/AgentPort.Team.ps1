@@ -80,7 +80,7 @@ function Start-AgentPortTeam {
             if($drive -and $drive.Free -lt 16GB){throw ('AgentPort needs about 16 GB free for the model and runtime. Free space on '+$drive.Name+':, then retry.')}
             Set-LaunchPhase 1 'Installing your local agent' 'Downloading Qwen3-Coder and the Windows CUDA runtime (about 13.6 GB). Downloads resume if interrupted.' 12
             $log=Join-Path $script:AppDataDir 'team-install'
-            $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'Install-Team.ps1')+'"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput ($log+'.out.log') -RedirectStandardError ($log+'.err.log')
+            $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',('"'+(Join-Path $PSScriptRoot 'Install-Team.ps1')+'"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput ($log+'.out.log') -RedirectStandardError ($log+'.err.log')
             $clock=[Diagnostics.Stopwatch]::StartNew()
             while(-not $p.HasExited){
                 if($clock.Elapsed.TotalMinutes -gt 60){& taskkill.exe /PID $p.Id /T /F | Out-Null;throw 'Download timed out. Click Download and start again to resume.'}

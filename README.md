@@ -6,9 +6,13 @@ It detects NVIDIA hardware, manages a CUDA-accelerated GGUF backend, connects th
 
 ## Download
 
-**[Download AgentPort v2.1.2 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.1.2/AgentPort.exe)**
+**[Download AgentPort v2.3.0 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.3.0/AgentPort.exe)**
 
 The EXE is portable. Download it and double-click it. AgentPort gives visible progress while it prepares anything missing.
+
+### Windows security
+
+The launcher is open-source and its SHA-256 checksum is published beside every release. Older releases were unsigned and may be quarantined by Microsoft Defender's `Trojan:Win32/Wacatac.B!ml` heuristic. The release pipeline now removes the unnecessary PowerShell `ExecutionPolicy Bypass` signal and supports Microsoft Artifact Signing for future releases. Until a signed build is available, verify the checksum and download only from this repository. Do not disable Defender globally.
 
 ## The simplest setup
 

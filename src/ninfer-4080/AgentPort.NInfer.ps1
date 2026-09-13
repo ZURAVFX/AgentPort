@@ -352,7 +352,7 @@ function Get-AgentPortNInferSetupPath {
 
 function Install-AgentPortNInfer([bool]$ShowCompletion=$true) {
     $setup=Get-AgentPortNInferSetupPath
-    $process=Start-Process powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$setup+'"')) -Wait -PassThru
+    $process=Start-Process powershell.exe -ArgumentList @('-NoLogo','-NoProfile','-ExecutionPolicy','RemoteSigned','-File',('"'+$setup+'"')) -Wait -PassThru
     if($process.ExitCode -eq 0){
         Refresh-Models
         Refresh-NInferControls

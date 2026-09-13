@@ -79,7 +79,7 @@ function Invoke-AgentPortMcpInstall {
     $logRoot=Join-Path $env:LOCALAPPDATA 'AgentPort\mcp'
     New-Item -ItemType Directory -Force -Path $logRoot | Out-Null
     $log=Join-Path $logRoot ('install-'+$Tool)
-    $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+(Join-Path $PSScriptRoot 'Install-Mcp.ps1')+'"'),'-Tool',$Tool) -WindowStyle Hidden -PassThru -RedirectStandardOutput ($log+'.out.log') -RedirectStandardError ($log+'.err.log')
+    $p=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',('"'+(Join-Path $PSScriptRoot 'Install-Mcp.ps1')+'"'),'-Tool',$Tool) -WindowStyle Hidden -PassThru -RedirectStandardOutput ($log+'.out.log') -RedirectStandardError ($log+'.err.log')
     $timer=[Diagnostics.Stopwatch]::StartNew()
     while(-not $p.HasExited){
         if($timer.Elapsed.TotalMinutes -gt 10){& taskkill.exe /PID $p.Id /T /F | Out-Null;throw "Installation timed out. Check $log.err.log and retry."}

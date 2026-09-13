@@ -45,10 +45,10 @@ if($LASTEXITCODE -ne 0){
     throw "Ubuntu-24.04 exists but has not completed first-run setup. Open Ubuntu-24.04 from the Start menu once, finish its username/password setup, close it, then rerun this installer."
 }
 
-& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $installer -Distro $Distro -Mode BuildAndDownload
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File $installer -Distro $Distro -Mode BuildAndDownload
 if($LASTEXITCODE -ne 0){ throw "NInfer build/download failed with exit code $LASTEXITCODE." }
 
-& powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File $backend -Backend Auto -Distro $Distro
+& powershell.exe -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File $backend -Backend Auto -Distro $Distro
 if($LASTEXITCODE -ne 0){ Write-Warning 'NInfer installed, but AgentPort backend preference could not be set automatically.' }
 
 Write-Host ''

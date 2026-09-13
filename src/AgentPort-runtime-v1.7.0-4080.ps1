@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.2.9'
+$script:AppVersion = '2.3.0'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -2916,7 +2916,7 @@ function Start-UnifiedStack {
             if($answer -ne [Windows.MessageBoxResult]::Yes){throw 'GPU backend installation was cancelled.'}
             Set-LaunchPhase 3 'Installing GPU backend' 'Downloading the verified portable CUDA runtime.' 28
             $installer=Join-Path $PSScriptRoot 'ninfer-4080\Install-Team.ps1'
-            $install=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"'+$installer+'"'),'-RuntimeOnly') -WindowStyle Hidden -Wait -PassThru
+            $install=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',('"'+$installer+'"'),'-RuntimeOnly') -WindowStyle Hidden -Wait -PassThru
             if($install.ExitCode -ne 0){throw 'The managed GPU backend could not be installed. Check your internet connection and retry.'}
             $managedRuntime=Get-AgentPortTeamRuntime
         }

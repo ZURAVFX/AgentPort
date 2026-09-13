@@ -16,7 +16,7 @@ echo.
 choice /C YN /N /M "Continue with NInfer installation? [Y/N] "
 if errorlevel 2 exit /b 0
 echo.
-powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -File "%~dp0Bootstrap-NInfer4080.ps1"
+powershell.exe -NoLogo -NoProfile -ExecutionPolicy RemoteSigned -File "%~dp0Bootstrap-NInfer4080.ps1"
 if errorlevel 1 (
   echo.
   echo NInfer setup is not complete yet. Read the message above.
