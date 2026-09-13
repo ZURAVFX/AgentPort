@@ -6,13 +6,13 @@ It detects NVIDIA hardware, manages a CUDA-accelerated GGUF backend, connects th
 
 ## Download
 
-**[Download AgentPort v2.3.0 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.3.0/AgentPort.exe)**
+**[Download AgentPort v2.3.1 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.3.1/AgentPort.exe)**
 
 The EXE is portable. Download it and double-click it. AgentPort gives visible progress while it prepares anything missing.
 
 ### Windows security
 
-The launcher is open-source and its SHA-256 checksum is published beside every release. Older releases were unsigned and may be quarantined by Microsoft Defender's `Trojan:Win32/Wacatac.B!ml` heuristic. The release pipeline now removes the unnecessary PowerShell `ExecutionPolicy Bypass` signal and supports Microsoft Artifact Signing for future releases. Until a signed build is available, verify the checksum and download only from this repository. Do not disable Defender globally.
+The launcher is open-source and its SHA-256 checksum is published beside every release. Current releases are unsigned and may still be quarantined by Microsoft Defender. A matching checksum verifies the download, not that an antivirus detection is a false positive. Do not disable Defender or add an exclusion to run a blocked build. Report the detection and version to the project; signing support is available in the release pipeline but has not yet been configured.
 
 ## The simplest setup
 
@@ -39,6 +39,15 @@ For an NVIDIA GPU with 16 GB VRAM, the tested default is Qwen3-Coder 30B A3B at 
 - manages Harness-only skills without mixing them into other agent applications
 
 TextGen is not required. Existing TextGen model folders may still be scanned so users can reuse GGUF files they already downloaded, but AgentPort runs those files with its own managed backend.
+
+### Independent controls on Home
+
+- **Unload model:** stops the model runtime to release its memory. Harness stays open; load the same model again to resume. Model files are not deleted.
+- **Close Harness:** stops the agent service and its current task. The model stays loaded and saved chats are kept. A browser tab may remain visible after the service closes.
+- **Open Harness:** starts the interface without reloading your model. When already open, the button becomes **Show Harness**.
+- **Stop both & free memory:** stops both AgentPort runtimes. ComfyUI, Blender and other apps are left alone, so total VRAM usage may not fall to zero.
+
+Changing the model or its runtime profile may restart Harness to apply that configuration. Within the same AgentPort session, unloading and reloading the same model and context keeps the existing Harness session. An older Harness from a previous app launch is restarted when loading a model so its runtime profile can be verified.
 
 ## Models
 

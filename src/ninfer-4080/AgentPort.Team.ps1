@@ -62,8 +62,13 @@ function Install-AgentPortTeamPreset {
 }
 
 function Start-AgentPortTeam {
-    if($script:TeamStarting){return};$script:TeamStarting=$true
+    if($script:TeamStarting -or $script:StopOperation.Active){return};$script:TeamStarting=$true
+    $script:StopOperation.Generation++;$script:RuntimeSnapshot=$null
+    $script:HarnessOnlyLaunch=$false
+    $startGeneration=$script:StopOperation.Generation
+    $modelGeneration=$script:ModelStopGeneration
     try{
+        $keepHarness=$script:HarnessOwnership -and (Test-Port 3080) -and -not (Test-Port $script:BackendPort) -and ([string]$script:Config.active_model -eq 'agentport-fast-qwen3-coder')
         $PrimaryButton.IsEnabled=$false
         # Some Windows NVIDIA driver builds leave LASTEXITCODE as -1 when the
         # query is piped through Select-Object, despite returning a valid name.
@@ -100,14 +105,17 @@ function Start-AgentPortTeam {
         Prepare-IsolatedHarnessSkills
         Update-HarnessSettings 'agentport-fast-qwen3-coder' 'Qwen3-Coder 30B A3B - AgentPort Fast' 49152 4096
         Install-AgentPortTeamPreset
-        Kill-Stack
+        if($script:ModelStopGeneration -ne $modelGeneration){throw 'Startup cancelled.'}
+        if(-not $keepHarness){Kill-Stack}
         if(Test-Port $script:BackendPort){throw 'Another app is using port 5100. Close that backend and retry.'}
         $logs=Join-Path $script:AppDataDir 'team-logs';New-Item -ItemType Directory -Force -Path $logs | Out-Null
         Set-LaunchPhase 3 'Loading Qwen3-Coder' '48k context, action-first preset and protected GPU headroom. ComfyUI and Blender remain open.' 65
+        if($script:ModelStopGeneration -ne $modelGeneration){throw 'Startup cancelled.'}
         $script:TextGenProcess=Start-Process (Get-AgentPortTeamRuntime) -ArgumentList @('-m',('"'+$model+'"'),'--host','127.0.0.1','--port',[string]$script:BackendPort,'--api-key','local-textgen','--alias','agentport-fast-qwen3-coder','-c','49152','-ngl','99','--fit-target','768','-ctk','q4_0','-ctv','q4_0','--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics') -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'llama.out.log') -RedirectStandardError (Join-Path $logs 'llama.err.log')
         $script:TextGenOwnership=Get-AgentPortProcessRecord ([int]$script:TextGenProcess.Id) $script:TextGenProcess
         $clock=[Diagnostics.Stopwatch]::StartNew()
         while($true){
+            if($script:ModelStopGeneration -ne $modelGeneration){throw 'Startup cancelled.'}
             $script:TextGenProcess.Refresh()
             if($script:TextGenProcess.HasExited){throw "The model could not load. See $logs\llama.err.log. Close other loaded GPU models and retry."}
             try{$ready=Invoke-RestMethod ("http://127.0.0.1:$script:BackendPort/health") -TimeoutSec 1;if($ready.status -eq 'ok'){break}}catch{}
@@ -118,6 +126,7 @@ function Start-AgentPortTeam {
         $script:Config.last_model=$script:PendingModel;$script:Config.active_model=$script:PendingModel
         $script:Config.active_context_tokens=49152;$script:Config.active_offload_mode='AgentPort Fast';Save-Config
         $script:TeamHarnessPatch=New-NInferHarnessPatch (Join-Path $logs 'harness.patch.yml')
+        if($script:StopOperation.Generation -ne $startGeneration){$script:LaunchState='idle';Set-Log 'Model loaded. Harness was left closed as requested.' 'ok';return}
         Start-Harness
         $script:LaunchState='wait_harness';$script:LaunchDeadline=(Get-Date).AddMinutes(3)
         Set-LaunchPhase 6 'Opening your local agent' 'Starting Harness with Qwen3-Coder, filesystem tools and enabled MCPs.' 92
@@ -126,5 +135,5 @@ function Start-AgentPortTeam {
         Stop-AgentPortProcess $script:TextGenProcess;$script:TextGenProcess=$null
         Set-LaunchPhase 1 'Setup needs attention' $_.Exception.Message 100 'error'
         Set-Log $_.Exception.Message 'error';$script:LaunchState='idle'
-    }finally{$script:TeamStarting=$false;$PrimaryButton.IsEnabled=$true}
+    }finally{$script:TeamStarting=$false;$PrimaryButton.IsEnabled=-not $script:StopOperation.Active}
 }

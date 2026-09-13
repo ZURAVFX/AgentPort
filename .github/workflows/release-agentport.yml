@@ -17,12 +17,10 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
-      - name: Build signed-by-hash executable
+      - name: Build executable
         shell: pwsh
         run: |
           go -C src build -trimpath -ldflags '-s -w -H=windowsgui' -o ../AgentPort.exe .
-          $hash = (Get-FileHash AgentPort.exe -Algorithm SHA256).Hash.ToLowerInvariant()
-          "$hash  AgentPort.exe" | Set-Content -NoNewline -Encoding ascii AgentPort.exe.sha256
       - name: Sign with Microsoft Artifact Signing when configured
         if: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT != '' }}
         uses: azure/login@v2
@@ -57,4 +55,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
-        run: gh release create $env:GITHUB_REF_NAME AgentPort.exe AgentPort.exe.sha256 --repo $env:GITHUB_REPOSITORY --generate-notes
+        run: |
+          # Signing changes the bytes: hash the final artifact the updater downloads.
+          $hash = (Get-FileHash AgentPort.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AgentPort.exe" | Set-Content -NoNewline -Encoding ascii AgentPort.exe.sha256
+          gh release create $env:GITHUB_REF_NAME AgentPort.exe AgentPort.exe.sha256 --repo $env:GITHUB_REPOSITORY --generate-notes

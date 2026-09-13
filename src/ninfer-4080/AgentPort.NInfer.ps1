@@ -22,46 +22,66 @@ function ConvertTo-AgentPortCreationTime {
 }
 
 function Get-AgentPortProcessRecord {
-    param([int]$ProcessId,[object]$Process)
+    param([int]$ProcessId,[object]$Process,[switch]$ThrowOnQueryFailure)
     if($ProcessId -le 0 -and $Process){$ProcessId=[int]$Process.Id}
     if($ProcessId -le 0){return $null}
-    try{$cim=Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop}catch{return $null}
+    try{$cim=Get-CimInstance Win32_Process -Filter "ProcessId=$ProcessId" -ErrorAction Stop}catch{if($ThrowOnQueryFailure){throw};return $null}
     if(-not $cim){return $null}
+    # A retained Process handle must still represent a live original launch;
+    # never adopt the current occupant of its PID after that handle exited.
+    if($Process -is [Diagnostics.Process]){try{if($Process.HasExited){return $null}}catch{return $null}}
     $start=ConvertTo-AgentPortCreationTime $cim.CreationDate
     if(-not $start -and $Process){try{$start=([datetime]$Process.StartTime).ToUniversalTime()}catch{}}
     [pscustomobject]@{
         Pid=[int]$cim.ProcessId; ParentPid=[int]$cim.ParentProcessId; StartTime=$start
+        StartTimeUtcTicks=if($start){[string]$start.Ticks}else{''}
         ExecutablePath=[string]$cim.ExecutablePath; CommandLine=[string]$cim.CommandLine
         Depth=0
     }
 }
 
 function Get-AgentPortProcessRecords {
-    param([object[]]$Records)
+    param([object[]]$Records,[switch]$ThrowOnQueryFailure)
     if($null -ne $Records){return @($Records|ForEach-Object{[pscustomobject]$_})}
     try {
         return @(Get-CimInstance Win32_Process -ErrorAction Stop | ForEach-Object {
+            $start=ConvertTo-AgentPortCreationTime $_.CreationDate
             [pscustomobject]@{
-                Pid=[int]$_.ProcessId;ParentPid=[int]$_.ParentProcessId;StartTime=(ConvertTo-AgentPortCreationTime $_.CreationDate)
+                Pid=[int]$_.ProcessId;ParentPid=[int]$_.ParentProcessId;StartTime=$start
+                StartTimeUtcTicks=if($start){[string]$start.Ticks}else{''}
                 ExecutablePath=[string]$_.ExecutablePath;CommandLine=[string]$_.CommandLine;Depth=0
             }
         })
-    } catch {return @()}
+    } catch {if($ThrowOnQueryFailure){throw};return @()}
+}
+
+function Get-AgentPortProcessStartTicks {
+    param([Parameter(Mandatory)]$Record)
+    # Windows PowerShell 5.1 serialises DateTime as /Date(milliseconds)/.
+    # Preserve the original CIM precision in a string across worker JSON.
+    if($Record.PSObject.Properties.Name -contains 'StartTimeUtcTicks' -and $Record.StartTimeUtcTicks){
+        $ticks=0L
+        if([long]::TryParse([string]$Record.StartTimeUtcTicks,[ref]$ticks) -and $ticks -gt 0 -and $ticks -le [datetime]::MaxValue.Ticks){return $ticks}
+        return $null
+    }
+    $start=ConvertTo-AgentPortCreationTime $Record.StartTime
+    if($start){return $start.Ticks}
+    return $null
 }
 
 function Test-AgentPortProcessIdentity {
     param([Parameter(Mandatory)]$Expected,[object[]]$Records)
     if(-not $Expected -or [int]$Expected.Pid -le 0){return $false}
     $current=$null
-    if($Records){$current=@($Records|Where-Object{[int]$_.Pid -eq [int]$Expected.Pid}|Select-Object -First 1)}
-    if($current -is [array]){$current=$current|Select-Object -First 1}
-    if(-not $current){$current=Get-AgentPortProcessRecord ([int]$Expected.Pid)}
+    if($PSBoundParameters.ContainsKey('Records')){$current=$Records|Where-Object{[int]$_.Pid -eq [int]$Expected.Pid}|Select-Object -First 1}
+    else{$current=Get-AgentPortProcessRecord ([int]$Expected.Pid)}
     if(-not $current){return $false}
-    $expectedStart=ConvertTo-AgentPortCreationTime $Expected.StartTime
-    $currentStart=ConvertTo-AgentPortCreationTime $current.StartTime
-    if(-not $expectedStart -or -not $currentStart -or $expectedStart.Ticks -ne $currentStart.Ticks){return $false}
+    $expectedStart=Get-AgentPortProcessStartTicks $Expected
+    $currentStart=Get-AgentPortProcessStartTicks $current
+    if(-not $expectedStart -or -not $currentStart -or $expectedStart -ne $currentStart){return $false}
+    if([string]::IsNullOrWhiteSpace([string]$Expected.ExecutablePath) -or [string]::IsNullOrWhiteSpace([string]$Expected.CommandLine)){return $false}
     if((ConvertTo-AgentPortStopPath ([string]$Expected.ExecutablePath)) -ne (ConvertTo-AgentPortStopPath ([string]$current.ExecutablePath))){return $false}
-    if([string]$Expected.CommandLine -ne [string]$current.CommandLine){return $false}
+    if([string]$Expected.CommandLine -cne [string]$current.CommandLine){return $false}
     return $true
 }
 
@@ -74,7 +94,7 @@ function Get-AgentPortProcessDescendants {
         $item=$queue.Dequeue()
         foreach($child in @($Records|Where-Object{[int]$_.ParentPid -eq [int]$item.Record.Pid})){
             if([int]$child.Pid -eq [int]$Root.Pid -or @($result|Where-Object{[int]$_.Pid -eq [int]$child.Pid}).Count -gt 0){continue}
-            $copy=[pscustomobject]@{Pid=[int]$child.Pid;ParentPid=[int]$child.ParentPid;StartTime=$child.StartTime;ExecutablePath=[string]$child.ExecutablePath;CommandLine=[string]$child.CommandLine;Depth=([int]$item.Depth+1)}
+            $copy=[pscustomobject]@{Pid=[int]$child.Pid;ParentPid=[int]$child.ParentPid;StartTime=$child.StartTime;StartTimeUtcTicks=[string](Get-AgentPortProcessStartTicks $child);ExecutablePath=[string]$child.ExecutablePath;CommandLine=[string]$child.CommandLine;Depth=([int]$item.Depth+1)}
             [void]$result.Add($copy);$queue.Enqueue([pscustomobject]@{Record=$copy;Depth=$copy.Depth})
         }
     }
@@ -109,7 +129,8 @@ function Test-AgentPortHarnessCachedRecord {
     # npx commonly invokes the cached package through node_modules\.bin\..\.
     # Compare the canonical package path as well as the raw command line so
     # the real Harness child is still owned after its cmd wrapper exits.
-    $canonicalCommand=[regex]::Replace($command,'\\[^\\\s"'']+\\\.\.\\','\\')
+    # npm's Windows shim can emit .bin\\..\ with a repeated separator.
+    $canonicalCommand=[regex]::Replace($command,'\\[^\\\s"'']+\\+\.\.\\+','\')
     if($command -notmatch '(?i)(^|\s|["''])web(["'']|\s|$)'){return $false}
     foreach($entry in @($CachedEntries)){
         $needle=[string]$entry
@@ -143,8 +164,8 @@ function Test-AgentPortBackendRecord {
     param([Parameter(Mandatory)]$Record,[string]$TextGenRoot,[string]$ManagedRuntimeRoot)
     $command=[string]$Record.CommandLine
     $exe=ConvertTo-AgentPortStopPath ([string]$Record.ExecutablePath)
-    if($command -match '(?i)server\.py' -and $TextGenRoot -and $exe.StartsWith((ConvertTo-AgentPortStopPath $TextGenRoot))){return $true}
-    if($command -match '(?i)llama-server' -and $ManagedRuntimeRoot -and ($exe.StartsWith((ConvertTo-AgentPortStopPath $ManagedRuntimeRoot)) -or $command.ToLowerInvariant().Contains((ConvertTo-AgentPortStopPath $ManagedRuntimeRoot)))){return $true}
+    if($command -match '(?i)server\.py' -and $TextGenRoot -and $exe.StartsWith((ConvertTo-AgentPortStopPath $TextGenRoot)+'\')){return $true}
+    if($command -match '(?i)llama-server' -and $ManagedRuntimeRoot -and $exe.StartsWith((ConvertTo-AgentPortStopPath $ManagedRuntimeRoot)+'\') -and [IO.Path]::GetFileName($exe) -eq 'llama-server.exe'){return $true}
     return $false
 }
 
@@ -161,12 +182,12 @@ function Get-AgentPortStopPlan {
         [string]$TextGenRoot,
         [string]$ManagedRuntimeRoot
     )
-    $records=Get-AgentPortProcessRecords $ProcessRecords
+    $records=Get-AgentPortProcessRecords $ProcessRecords -ThrowOnQueryFailure
     $owned=$null
     $ownerExpected=$null
     if($OwnedProcess){
         if($OwnedProcess.Pid -and $OwnedProcess.StartTime -and $OwnedProcess.CommandLine -and $OwnedProcess.ExecutablePath){
-            $ownerExpected=[pscustomobject]@{Pid=[int]$OwnedProcess.Pid;ParentPid=[int]$OwnedProcess.ParentPid;StartTime=$OwnedProcess.StartTime;ExecutablePath=[string]$OwnedProcess.ExecutablePath;CommandLine=[string]$OwnedProcess.CommandLine;Depth=0}
+            $ownerExpected=[pscustomobject]@{Pid=[int]$OwnedProcess.Pid;ParentPid=[int]$OwnedProcess.ParentPid;StartTime=$OwnedProcess.StartTime;StartTimeUtcTicks=[string](Get-AgentPortProcessStartTicks $OwnedProcess);ExecutablePath=[string]$OwnedProcess.ExecutablePath;CommandLine=[string]$OwnedProcess.CommandLine;Depth=0}
         } elseif($OwnedProcess.Id){$ownerExpected=Get-AgentPortProcessRecord ([int]$OwnedProcess.Id) $OwnedProcess}
         if($ownerExpected){
             $freshOwner=@($records|Where-Object{[int]$_.Pid -eq [int]$ownerExpected.Pid}|Select-Object -First 1)
@@ -208,18 +229,20 @@ function Stop-AgentPortProcess {
     if(-not (Test-AgentPortProcessIdentity $expected)){return $false}
     try {
         Stop-Process -Id ([int]$expected.Pid) -Force -ErrorAction Stop
-        try{Wait-Process -Id ([int]$expected.Pid) -Timeout 5 -ErrorAction SilentlyContinue}catch{}
-        return $true
+        $deadline=(Get-Date).AddSeconds(5)
+        do {
+            $current=Get-AgentPortProcessRecord ([int]$expected.Pid) -ThrowOnQueryFailure
+            if(-not $current -or -not (Test-AgentPortProcessIdentity $expected @($current))){return $true}
+            Start-Sleep -Milliseconds 100
+        } while((Get-Date) -lt $deadline)
+        return $false
     } catch {return $false}
 }
 
 function Stop-AgentPortStopPlan {
     param([Parameter(Mandatory)]$Plan)
-    $stopped=New-Object System.Collections.Generic.List[int]
-    foreach($record in @($Plan.Processes)){
-        if(Stop-AgentPortProcess $null $record){[void]$stopped.Add([int]$record.Pid)}
-    }
-    return [pscustomobject]@{StoppedPids=@($stopped.ToArray());UnownedListenerPids=@($Plan.UnownedListenerPids)}
+    if(-not (Get-Command Invoke-AgentPortStopPlansCore -ErrorAction SilentlyContinue)){. (Join-Path $PSScriptRoot 'AgentPort.Background.ps1')}
+    return Invoke-AgentPortStopPlansCore @($Plan)
 }
 
 function Stop-VerifiedAgentPortProcess {
@@ -390,16 +413,22 @@ function New-NInferHarnessPatch {
 }
 
 function Start-AgentPortNInfer {
+    if($script:StopOperation.Active){return}
+    $script:StopOperation.Generation++;$script:RuntimeSnapshot=$null
+    $script:HarnessOnlyLaunch=$false
+    $modelGeneration=$script:ModelStopGeneration;$startGeneration=$script:StopOperation.Generation
     try {
         $PrimaryButton.IsEnabled=$false
-        Kill-Stack
+        $keepHarness=$script:HarnessOwnership -and (Test-Port 3080) -and -not (Test-Port $script:BackendPort) -and ([string]$script:Config.active_model -eq 'qwen3.8-27b-minq4')
+        if(-not $keepHarness){Kill-Stack}
         Start-Sleep -Milliseconds 700
-        if((Test-Port 3080) -or (Test-Port $script:BackendPort)){throw 'A backend started outside AgentPort is still running. Close it, then retry.'}
+        if((Test-Port $script:BackendPort) -or ((Test-Port 3080) -and -not $keepHarness)){throw 'A backend started outside AgentPort is still running. Close it, then retry.'}
         $selectedLabel=[string]$ContextCombo.SelectedItem
         $selectedContext=[int]$script:ContextPresets[$selectedLabel]
                 $context=if($selectedContext -ge 49152){49152}elseif($selectedContext -ge 32768){32768}else{24576}
         $profile=if($context -eq 49152){'maximum 49k context'}elseif($context -eq 32768){'balanced 32k tools context'}else{'fast/reliable 24k context'}
         Set-LaunchPhase 1 'Starting NInfer' ("Loading Qwen3.8 27B min-Q4, $profile, MTP3.") 20
+        if($script:ModelStopGeneration -ne $modelGeneration){throw 'Startup cancelled.'}
         if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
         $attempts=@($context,32768,24576,16384)|Where-Object {$_ -le $context}|Select-Object -Unique
         $lastCapacityError=''
@@ -431,6 +460,8 @@ function Start-AgentPortNInfer {
         Set-Log ("NInfer verified | stock Qwen3.8 27B min-Q4 | $context context | INT4 KV | MTP3") 'ok'
         Set-LaunchPhase 6 'Starting fast chat' 'NInfer completion verified. Harness tools are disabled in this memory-limited mode.' 92
         $script:NInferHarnessPatch=New-NInferHarnessPatch (Join-Path $script:NInferState.LogDirectory 'coding.patch.yml')
+        if($script:ModelStopGeneration -ne $modelGeneration){throw 'Startup cancelled.'}
+        if($script:StopOperation.Generation -ne $startGeneration){$script:LaunchState='idle';Set-Log 'NInfer loaded. Harness was left closed as requested.' 'ok';return}
         Start-Harness
         $script:LaunchState='wait_harness'
         $script:LaunchDeadline=(Get-Date).AddSeconds(120)

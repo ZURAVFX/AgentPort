@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.3.0'
+$script:AppVersion = '2.3.1'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -64,6 +64,7 @@ $script:Models = @()
 $script:RepoFiles = @()
 $script:RepoHelpers = @()
 $script:LaunchState = 'idle'
+$script:HarnessOnlyLaunch = $false
 $script:LaunchDeadline = $null
 $script:PendingModel = ''
 $script:PendingContext = 49152
@@ -86,6 +87,7 @@ $script:ModelCatalogueScannedAt = ''
 $script:RuntimeProbeOperation = $null
 $script:RuntimeSnapshot = $null
 $script:StopOperation = [pscustomobject]@{Active=$false;Generation=0;Kind='';StartedAt=$null;Handle=$null}
+$script:ModelStopGeneration = 0
 $script:BackgroundOperationBudgetSeconds = 45
 $script:AppDataDir = Join-Path $env:LOCALAPPDATA 'AgentPort'
 $script:PublicDataDir = Join-Path $env:PUBLIC 'AgentPort'
@@ -1666,6 +1668,53 @@ function Poll-OperationFeedback {
 
 function Set-StopControls([bool]$Enabled){
     foreach($button in @($StopBackendButton,$StopHarnessButton,$PurgeVramButton)){if($button){$button.IsEnabled=$Enabled}}
+    if($RuntimeOpenUiButton){$RuntimeOpenUiButton.IsEnabled=$Enabled}
+    if($PrimaryButton){$PrimaryButton.IsEnabled=$Enabled}
+}
+
+function Update-AgentPortLifecycleControls {
+    param([bool]$ModelOnline,[bool]$HarnessOnline)
+    $busy=$script:StopOperation.Active
+    $kind=$script:StopOperation.Kind
+    $unloading=$busy -and $kind -in @('backend','all')
+    $closing=$busy -and $kind -in @('harness','all')
+    $opening=$script:LaunchState -eq 'wait_harness'
+    $ModelControlStatus.Text=if($unloading){'Unloading model...'}elseif($ModelOnline){'Loaded. Unload to release its memory; Harness stays open.'}else{'Unloaded. Load a model above to answer prompts.'}
+    $HarnessControlStatus.Text=if($closing){'Closing Harness...'}elseif($opening){'Opening Harness...'}elseif($HarnessOnline -and -not $ModelOnline){'Open. Chats are kept; load a model to continue working.'}elseif($HarnessOnline){'Open. Closing Harness keeps your model loaded.'}else{'Closed. Open Harness without reloading the model.'}
+    $StopBackendButton.Content=if($unloading){'Unloading...'}else{'Unload model'}
+    $StopHarnessButton.Content=if($closing){'Closing...'}else{'Close Harness'}
+    $RuntimeOpenUiButton.Content=if($opening){'Opening...'}elseif($HarnessOnline){'Show Harness'}else{'Open Harness'}
+    # Unload remains available even if a crashed/starting runtime has no API.
+    $StopBackendButton.IsEnabled=-not $busy
+    $StopHarnessButton.IsEnabled=-not $busy
+    $PurgeVramButton.IsEnabled=-not $busy
+    $RuntimeOpenUiButton.IsEnabled=-not ($busy -or $script:LaunchState -ne 'idle' -or $script:TeamStarting)
+}
+
+function Open-HarnessFromHome {
+    if($script:StopOperation.Active -or $script:LaunchState -ne 'idle' -or $script:TeamStarting){return}
+    try {
+        if(Test-Port 3080){
+            $url=Get-HarnessStartupUrl
+            if(-not $url){$url='http://127.0.0.1:3080'}
+            if($script:OpenHarnessWhenReady){Start-Process $url}
+            return
+        }
+        # Use the active runtime profile, never the unstarted dropdown selection.
+        $script:PendingModel=[string]$script:Config.active_model
+        $script:PendingContext=[int]$script:Config.active_context_tokens
+        if($script:PendingContext -le 0){$script:PendingContext=49152}
+        $script:HarnessOnlyLaunch=$true
+        $script:LaunchState='wait_harness';$script:LaunchDeadline=(Get-Date).AddMinutes(2)
+        $PrimaryButton.IsEnabled=$false
+        Update-AgentPortLifecycleControls ([bool]($script:RuntimeSnapshot -and $script:RuntimeSnapshot.BackendOnline)) $false
+        Set-OperationFeedback 'Opening Harness' 'Starting the agent interface. Your model is not being stopped or reloaded.'
+        Start-Harness
+    } catch {
+        $script:LaunchState='idle';$script:HarnessOnlyLaunch=$false;$PrimaryButton.IsEnabled=$true
+        Set-OperationFeedback 'Harness could not open' $_.Exception.Message 'error'
+        Set-Log $_.Exception.Message 'error';Refresh-Runtime
+    }
 }
 
 function Kill-HarnessOnly {
@@ -1682,9 +1731,14 @@ function Start-AgentPortStopOperation {
     param([Parameter(Mandatory)][ValidateSet('backend','harness','all')][string]$Kind)
     if($script:StopOperation.Active){return $false}
     $script:StopOperation.Active=$true;$script:StopOperation.Generation++;$script:StopOperation.Kind=$Kind;$script:StopOperation.StartedAt=Get-Date
+    if($Kind -in @('backend','all')){$script:ModelStopGeneration++}
+    # Cancel the startup poll before it can reopen the component being stopped.
+    $script:LaunchState='idle';$script:HarnessOnlyLaunch=$false
     Set-StopControls $false
-    $title=if($Kind -eq 'backend'){'Stopping backend...'}elseif($Kind -eq 'harness'){'Stopping Harness...'}else{'Stopping everything...'}
-    $detail=if($Kind -eq 'backend'){'Closing the model runtime and releasing its GPU allocation.'}elseif($Kind -eq 'harness'){'Closing the agent interface. The model backend will remain loaded.'}else{'Closing the backend and Harness, then checking that AgentPort GPU memory is released.'}
+    Update-AgentPortLifecycleControls ([bool]($script:RuntimeSnapshot -and $script:RuntimeSnapshot.BackendOnline)) ([bool]($script:RuntimeSnapshot -and $script:RuntimeSnapshot.HarnessOnline))
+    $script:RuntimeSnapshot=$null
+    $title=if($Kind -eq 'backend'){'Unloading model...'}elseif($Kind -eq 'harness'){'Closing Harness...'}else{'Stopping model and Harness...'}
+    $detail=if($Kind -eq 'backend'){'Releasing the model runtime. Harness and saved chats stay open. Any current reply will stop.'}elseif($Kind -eq 'harness'){'Closing the agent service. Your model stays loaded; saved chats are kept. A browser tab may remain visible.'}else{'Closing AgentPort runtimes. ComfyUI, Blender and other apps are left alone.'}
     Set-OperationFeedback $title $detail
     try {
         $common=@{HarnessRoot=[string]$script:Config.harness_root;NpmCacheRoot=[string]$script:NpmCacheDir;PortableNodeDir=[string]$script:PortableNodeDir;TextGenRoot=[string]$script:Config.textgen_root;ManagedRuntimeRoot=(Join-Path $script:AppDataDir 'llama-b10809')}
@@ -1729,21 +1783,29 @@ function Complete-AgentPortStopOperationIfReady {
     $operation=$script:StopOperation.Handle
     if(Test-AgentPortBackgroundOperationTimedOut $operation){
         Stop-AgentPortBackgroundOperation $operation;$script:StopOperation.Handle=$null;$script:StopOperation.Active=$false
-        Set-StopControls $true;Set-OperationFeedback 'Stop timed out' 'AgentPort stopped only processes whose identity remained valid. Check the activity log before retrying.' 'error';Set-Log 'Stop operation timed out; no unverified process was terminated.' 'error';Refresh-Runtime;return
+        $script:StopOperation.Kind='';$script:StopOperation.Generation++
+        Set-StopControls $true;Set-OperationFeedback 'Stop timed out' 'Check Resources and activity, then retry. Processes that could not be verified were left alone.' 'error';Set-Log 'Stop operation timed out; no unverified process was terminated.' 'error';Refresh-Runtime;return
     }
     if(-not (Test-AgentPortBackgroundOperationCompleted $operation)){return}
     $kind=$script:StopOperation.Kind;$script:StopOperation.Handle=$null
     try {
         $result=@(Complete-AgentPortBackgroundOperation $operation)|Where-Object{$_ -and $_.PSObject.Properties.Name -contains 'StoppedPids'}|Select-Object -Last 1
+        if(-not $result){throw 'No shutdown result was returned. Retry, or check Resources and activity for details.'}
+        $incomplete=@($result.UnownedListenerPids)+@($result.RemainingListenerPids)+@($result.SkippedPids)+@($result.FailedPids)+@($result.RemainingOwnedPids) | Where-Object {$_}
+        if($incomplete){
+            $details='Still running or could not verify PID(s): '+(($incomplete | Sort-Object -Unique) -join ', ')+'. Check Resources and activity, then retry. Unrelated apps were left alone.'
+            if($result.FailureDetails){$details+=' '+(@($result.FailureDetails | ForEach-Object {$_.Message}) -join '; ')}
+            throw $details
+        }
         if($kind -in @('backend','all')){$script:TextGenProcess=$null;$script:TextGenOwnership=$null;$script:LaunchState='idle';$script:NInferState=$null}
         if($kind -in @('harness','all')){$script:HarnessProcess=$null;$script:HarnessOwnership=$null}
         $script:StopOperation.Active=$false;$script:StopOperation.Kind='';$script:PrimaryButton.IsEnabled=$true
-        if($kind -eq 'backend'){$PrimaryButton.Content='Start selected model';Set-OperationFeedback 'Backend stopped' 'GPU memory used by the model has been released. Harness remains open but cannot answer until a backend starts.' 'ok';Set-Log 'Backend stopped. Harness remains open.' 'ok'}
-        elseif($kind -eq 'harness'){$PrimaryButton.Content='Apply / Switch';Set-OperationFeedback 'Harness stopped' 'The agent interface is closed. The backend remains loaded and ready.' 'ok';Set-Log 'Harness stopped. The backend remains loaded.' 'ok'}
-        else {$PrimaryButton.Content='Start selected model';Set-OperationFeedback 'AgentPort stopped' 'Backend and Harness are closed. AgentPort model VRAM has been released.' 'ok';Set-Log 'AgentPort stack stopped and its GPU allocations were released. You can start NInfer again.' 'ok'}
-        if($result -and (@($result.UnownedListenerPids).Count -gt 0 -or @($result.RemainingListenerPids).Count -gt 0 -or @($result.SkippedPids).Count -gt 0)){Set-OperationFeedback 'Some services are still running' 'A process outside AgentPort still owns a required port, or an owned process changed identity before it could be stopped. It was left untouched.' 'error';Set-Log 'AgentPort left an unverified or unrelated process running by design.' 'error'}
+        $LaunchProgressCard.Visibility='Collapsed'
+        if($kind -eq 'backend'){Set-OperationFeedback 'Model unloaded' 'Harness was left alone. Load a model above when you are ready; model files remain on disk.' 'ok';Set-Log 'Model unloaded. Harness was not stopped.' 'ok'}
+        elseif($kind -eq 'harness'){Set-OperationFeedback 'Harness closed' 'Your model was left loaded. Use Open Harness to return. Saved chats are kept; an existing browser tab may stay visible.' 'ok';Set-Log 'Harness closed. Model was not stopped.' 'ok'}
+        else {Set-OperationFeedback 'Model and Harness stopped' 'AgentPort runtimes have closed. Memory used by other apps remains in the live totals.' 'ok';Set-Log 'Model and Harness stopped. Other apps were left alone.' 'ok'}
     } catch {Set-OperationFeedback 'Stop failed' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error';$script:StopOperation.Active=$false;$script:StopOperation.Kind='';$PrimaryButton.IsEnabled=$true}
-    finally {Set-StopControls $true;Refresh-Runtime}
+    finally {$script:StopOperation.Generation++;$script:RuntimeSnapshot=$null;Set-StopControls $true;Refresh-Runtime}
 }
 
 function Stop-BackendOnly {[void](Start-AgentPortStopOperation 'backend')}
@@ -2295,6 +2357,13 @@ function Start-TextGen {
 }
 
 function Start-Harness {
+    if($script:StopOperation.Active){return}
+    $startGeneration=$script:StopOperation.Generation
+    # Reloading an unloaded model must not spawn a second Harness or close chats.
+    if(Test-Port 3080){
+        if(-not $script:HarnessOwnership){throw 'An older or unverified Harness is still running. Use Close Harness, then Open Harness to reconnect it.'}
+        return
+    }
     Ensure-AgentPortRuntimeDirs
     Repair-HarnessSettingsFile | Out-Null
     Repair-AgentPortPresetCompatibility
@@ -2319,6 +2388,10 @@ function Start-Harness {
         $cmd = 'set "TEXTGEN_API_KEY=local-textgen"&& set "NINFER_API_KEY=local-textgen"&& set "UNSLOTH_STUDIO_API_KEY=local-textgen"&& set "FREETOKEN_API_KEY=local-textgen"&& set "DSH_STUDIO_MODEL={0}"&& set "DSH_STUDIO_CONTEXT={1}"&& set "npm_config_cache={2}"&& "{3}" --yes @deepseek-ai/dsh@latest web --no-open > "{4}" 2> "{5}"' -f $script:PendingModel,$script:PendingContext,$script:NpmCacheDir,$npx,$out,$err
     }
     $mcpPatch=Join-Path $script:AppDataDir 'agentport-mcp.patch.json'
+    # Reopening Harness after relaunching AgentPort also restores the active
+    # mode's overlay; script variables alone do not survive an app restart.
+    if($script:PendingModel -eq 'agentport-fast-qwen3-coder' -and -not $script:TeamHarnessPatch){$script:TeamHarnessPatch=New-NInferHarnessPatch (Join-Path $logs 'team-harness.patch.yml')}
+    if($script:PendingModel -eq 'qwen3.8-27b-minq4' -and -not $script:NInferHarnessPatch){$script:NInferHarnessPatch=New-NInferHarnessPatch (Join-Path $logs 'ninfer-harness.patch.yml')}
     if($script:PendingModel -eq 'qwen3.8-27b-minq4'){
         Write-AgentPortMcpOverlay $mcpPatch -NInfer | Out-Null
     } else {Write-AgentPortMcpOverlay $mcpPatch | Out-Null}
@@ -2344,12 +2417,14 @@ function Start-Harness {
         $args+='--no-open'
         $root=[string]$script:Config.team_workspace
         New-Item -ItemType Directory -Force -Path $root | Out-Null
+        if($script:StopOperation.Active -or $script:StopOperation.Generation -ne $startGeneration){return}
         $script:HarnessProcess=Start-Process -FilePath $node -ArgumentList $args -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
         $script:HarnessOwnership=Get-AgentPortProcessRecord ([int]$script:HarnessProcess.Id) $script:HarnessProcess
         return
     }
     $cmd=$cmd.Replace('dsh web --no-open',('dsh web '+$patchArgs+' --no-open'))
     $cmd=$cmd.Replace('@deepseek-ai/dsh@latest web --no-open',('@deepseek-ai/dsh@latest web '+$patchArgs+' --no-open'))
+    if($script:StopOperation.Active -or $script:StopOperation.Generation -ne $startGeneration){return}
     $script:HarnessProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
     $script:HarnessOwnership=Get-AgentPortProcessRecord ([int]$script:HarnessProcess.Id) $script:HarnessProcess
 }
@@ -2414,11 +2489,16 @@ function Update-DeepSeekHarness {
 
 function Get-HarnessStartupUrl {
     $out=$script:HarnessOutLog
-    if(-not (Test-Path -LiteralPath $out)){return ''}
-    $text=Get-Content -LiteralPath $out -Raw -ErrorAction SilentlyContinue
-    if([string]::IsNullOrWhiteSpace([string]$text)){return ''}
-    $match=[regex]::Match([string]$text,'(?m)^dsh web:\s+(http://127\.0\.0\.1:3080/\?token=[A-Za-z0-9_-]+)\s*$')
-    if($match.Success){return $match.Groups[1].Value}
+    # A surviving Harness can be reopened by a fresh launcher process, which
+    # has no in-memory log handle. Look only in AgentPort's own recent logs.
+    $candidates=if($out){@($out)}else{@(Get-ChildItem -LiteralPath (Join-Path $script:AppDataDir 'logs') -Filter 'harness-*.out.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5 -ExpandProperty FullName)}
+    foreach($candidate in $candidates){
+        if(-not (Test-Path -LiteralPath $candidate)){continue}
+        $text=Get-Content -LiteralPath $candidate -Raw -ErrorAction SilentlyContinue
+        if([string]::IsNullOrWhiteSpace([string]$text)){continue}
+        $match=[regex]::Match([string]$text,'(?m)^dsh web:\s+(http://127\.0\.0\.1:3080/\?token=[A-Za-z0-9_-]+)\s*$')
+        if($match.Success){$script:HarnessOutLog=$candidate;return $match.Groups[1].Value}
+    }
     return ''
 }
 
@@ -2427,6 +2507,7 @@ function Set-Log([string]$Text,[string]$Kind='normal'){
     $prefix = if($Kind -eq 'error'){'ERROR'} elseif($Kind -eq 'ok'){'OK'} else {'INFO'}
     $line = "[$time] $prefix  $Text`r`n"
     $LogBox.AppendText($line)
+    if($IntegrationTest -or $IntegrationCurrentModel){Write-Host $line.TrimEnd()}
     $LogBox.ScrollToEnd()
     $StatusText.Text = $Text
 }
@@ -2869,6 +2950,11 @@ function Import-LocalGguf {
 }
 
 function Start-UnifiedStack {
+    if($script:StopOperation.Active -or $script:LaunchState -ne 'idle' -or $script:TeamStarting){return}
+    # Reject in-flight probes and the previous model's cached Ready state.
+    $script:StopOperation.Generation++;$script:RuntimeSnapshot=$null
+    $modelStartGeneration=$script:ModelStopGeneration
+    $harnessStartGeneration=$script:StopOperation.Generation
     $m=Get-SelectedModel
     if($m -and $m.Source -eq 'Team'){Start-AgentPortTeam;return}
     if($m -and $m.Source -eq 'NInfer'){Start-AgentPortNInfer; return}
@@ -2882,7 +2968,9 @@ function Start-UnifiedStack {
     if($MaxTokensCombo.SelectedItem){ [int]::TryParse(([string]$MaxTokensCombo.SelectedItem -replace ',',''),[ref]$max) | Out-Null }
     $max=[math]::Min($max,$ctx)
     try{
+        $keepHarness=$script:HarnessOwnership -and (Test-Port 3080) -and -not (Test-Port $script:BackendPort) -and (Test-ModelMatch ([string]$script:Config.active_model) $m.RelPath) -and ([int]$script:Config.active_context_tokens -eq $ctx)
         $script:InstallOnlyMode=$false
+        $script:HarnessOnlyLaunch=$false
         $PrimaryButton.IsEnabled=$false
         Set-LaunchPhase 1 'Preflight' 'Checking folders, hardware profile and selected model.' 6
         Ensure-AgentPortRuntimeDirs
@@ -2906,8 +2994,9 @@ function Start-UnifiedStack {
         $script:PendingModel=$m.RelPath
         $script:PendingContext=$ctx
 
-        Set-LaunchPhase 3 'Preparing local runtime' 'Stopping stale local processes and checking the managed GPU runtime.' 21
-        Kill-Stack
+        Set-LaunchPhase 3 'Preparing local runtime' $(if($keepHarness){'Reloading the model. Your existing Harness session stays open.'}else{'Preparing the selected model and its Harness profile.'}) 21
+        if(-not $keepHarness){Kill-Stack}
+        if($script:ModelStopGeneration -ne $modelStartGeneration){throw [OperationCanceledException]::new('Model startup cancelled.')}
         Start-Sleep -Milliseconds 250
 
         $managedRuntime=Get-AgentPortTeamRuntime
@@ -2926,7 +3015,10 @@ function Start-UnifiedStack {
             $args=@('-m',('"'+$m.FullPath+'"'),'--host','127.0.0.1','--port',[string]$script:BackendPort,'--api-key','local-textgen','--alias',$m.RelPath,'-c',$ctx,'-ngl',[string]$script:OffloadModes[$offload].gpu_layers,'-ctk',$cache,'-ctv',$cache,'--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics')
             if($null -ne $script:OffloadModes[$offload].fit_target){$args+=@('--fit-target',[string]$script:OffloadModes[$offload].fit_target)}
             if($m.HelperFiles -and $m.HelperFiles.Count -gt 0){$args+=@('--mmproj',('"'+$m.HelperFiles[0]+'"'))}
+            if($script:ModelStopGeneration -ne $modelStartGeneration){throw [OperationCanceledException]::new('Model startup cancelled.')}
             $script:TextGenProcess=Start-Process $managedRuntime -ArgumentList $args -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'llama.out.log') -RedirectStandardError (Join-Path $logs 'llama.err.log')
+            $script:TextGenOwnership=Get-AgentPortProcessRecord ([int]$script:TextGenProcess.Id) $script:TextGenProcess
+            $script:SuppressHarnessStart=($harnessStartGeneration -ne $script:StopOperation.Generation)
             $script:LaunchState='wait_textgen'
             $script:LaunchDeadline=(Get-Date).AddMinutes(5)
             $PrimaryButton.Content='Starting GPU backend...'
@@ -2937,6 +3029,7 @@ function Start-UnifiedStack {
         }
     }catch{
         $script:LaunchState='idle'
+        if($_.Exception -is [OperationCanceledException]){$PrimaryButton.IsEnabled=-not $script:StopOperation.Active;Set-Log $_.Exception.Message;return}
         $PrimaryButton.IsEnabled=$true
         $PrimaryButton.Content='Apply & Start'
         Set-LaunchPhase ([math]::Max(1,$script:LaunchPhase)) 'Startup failed' $_.Exception.Message $LaunchProgress.Value 'error'
@@ -2946,7 +3039,9 @@ function Start-UnifiedStack {
 }
 
 function Poll-Launch {
+    if($script:StopOperation.Active){return}
     $runtime=$script:RuntimeSnapshot
+    if($runtime -and [int]$runtime.StopGeneration -ne [int]$script:StopOperation.Generation){$runtime=$null}
     if($script:LaunchState -eq 'install_textgen'){
         if((Get-Date) -gt $script:LaunchDeadline){
             try{ if($script:BootstrapProcess -and -not $script:BootstrapProcess.HasExited){ $script:BootstrapProcess.Kill() } }catch{}
@@ -3037,6 +3132,7 @@ function Poll-Launch {
             Set-LaunchPhase 5 'Verifying model' 'Managed GGUF backend is online. Confirming the selected model is loaded.' 84
             $loaded=[string]$runtime.LoadedModel
             if(Test-ModelMatch $script:PendingModel $loaded){
+                if($script:SuppressHarnessStart){$script:SuppressHarnessStart=$false;$script:LaunchState='idle';$PrimaryButton.IsEnabled=$true;Set-OperationFeedback 'Model loaded' 'Harness was left closed as requested. Use Open Harness when ready.' 'ok';return}
                 try{
                     Set-LaunchPhase 6 'Starting Harness' 'Model verified. Starting the agent Harness and connecting it to the local backend.' 92
                     Start-Harness
@@ -3089,6 +3185,15 @@ function Poll-Launch {
                 }
             }
             $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply / Switch'
+            if($script:HarnessOnlyLaunch){
+                $script:HarnessOnlyLaunch=$false
+                $LaunchProgressCard.Visibility='Collapsed'
+                $detail=if($runtime.BackendOnline){'Your loaded model is ready. No model reload was needed.'}else{'Your chats are available. Load a model on Home before sending a prompt.'}
+                Set-OperationFeedback 'Harness is open' $detail 'ok';Set-Log ('Harness opened. '+$detail) 'ok'
+                if($script:OpenHarnessWhenReady){Start-Process $startupUrl}
+                Refresh-Runtime
+                return
+            }
             $isNInfer=($script:PendingModel -eq 'qwen3.8-27b-minq4')
             $backend=if($isNInfer){'NInfer RTX 4080'}elseif($script:PendingModel -eq 'agentport-fast-qwen3-coder'){'AgentPort Fast'}else{'Compatible GGUF runtime'}
             Set-LaunchPhase 7 'Ready' "$backend, the selected model and Harness are synchronised." 100 'ok'
@@ -3139,7 +3244,7 @@ function Render-RuntimeSnapshot {
             if($script:LaunchState -eq 'idle'){Update-BackendSelectionUi}
         } else {$RuntimeModel.Text='No model loaded';$RuntimeContext.Text='GGUF backend is online';$RuntimeOffload.Text='Model offloaded';$RuntimeApi.Text='Local API :5100';$RuntimeState.Text='Offloaded';$RuntimeState.Foreground='#A894FF';$RuntimeStateDot.Fill='#8A6DFF'}
     } else {
-        if($BackendName){$BackendName.Text='Backend'};$RuntimeModel.Text='Nothing running yet';$RuntimeContext.Text='48k recommended';$RuntimeOffload.Text='GPU priority is the default';$RuntimeApi.Text='Tools connect automatically';$RuntimeState.Text='Stopped';$RuntimeState.Foreground='#858596';$RuntimeStateDot.Fill='#4B4B56'
+        if($BackendName){$BackendName.Text='Model'};$RuntimeModel.Text=if($ds){'Harness open / model unloaded'}else{'No model loaded'};$RuntimeContext.Text='48k recommended';$RuntimeOffload.Text='GPU priority is the default';$RuntimeApi.Text=if($ds){'Load a model to resume'}else{'Tools connect automatically'};$RuntimeState.Text='Unloaded';$RuntimeState.Foreground='#858596';$RuntimeStateDot.Fill='#4B4B56'
         if($script:LaunchState -eq 'idle'){Update-BackendSelectionUi}
     }
     $metrics=$Snapshot.Metrics
@@ -3149,10 +3254,7 @@ function Render-RuntimeSnapshot {
     }
     if($Snapshot.Gpu.Total -gt 0){$VramText.Text=('{0:N1} / {1:N1} GB in use' -f [double]$Snapshot.Gpu.Used,[double]$Snapshot.Gpu.Total);$VramBar.Value=[math]::Min(100,100*[double]$Snapshot.Gpu.Used/[math]::Max(0.1,[double]$Snapshot.Gpu.Total))}
     if($Snapshot.Ram.Total -gt 0){$RamText.Text=('{0:N1} / {1:N1} GB in use' -f [double]$Snapshot.Ram.Used,[double]$Snapshot.Ram.Total);$RamBar.Value=[math]::Min(100,100*[double]$Snapshot.Ram.Used/[math]::Max(0.1,[double]$Snapshot.Ram.Total))}
-    if($RuntimeOpenUiButton){$RuntimeOpenUiButton.IsEnabled=$ds}
-    if(-not $script:StopOperation.Active){
-        if($StopBackendButton){$StopBackendButton.IsEnabled=$tg};if($StopHarnessButton){$StopHarnessButton.IsEnabled=$ds};if($PurgeVramButton){$PurgeVramButton.IsEnabled=$true}
-    }
+    Update-AgentPortLifecycleControls $tg $ds
 }
 
 function Complete-RuntimeProbeIfReady {
@@ -3387,7 +3489,9 @@ function Show-ProfilesMenu {
 
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="16" Margin="0,0,0,10">
                   <StackPanel>
-                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Agent controls" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Open the agent or stop only the part you need. These controls stay available while you work." Foreground="#85858F" FontSize="11" Margin="0,4,0,0" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open agent" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="StopBackendButton" Content="Stop backend" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopHarnessButton" Content="Stop Harness" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Stop all &amp; free VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></WrapPanel></Grid>
+                    <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Model &amp; Harness" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="PurgeVramButton" Grid.Column="1" Content="Stop both &amp; free memory" Style="{StaticResource DangerButton}" Padding="12,8" ToolTip="Stops only AgentPort runtimes. Other GPU apps and your model files are left alone."/></Grid>
+                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Margin="0,0,16,0" VerticalAlignment="Center"><TextBlock Text="Local model" Foreground="#EEEEF2" FontWeight="SemiBold"/><TextBlock x:Name="ModelControlStatus" Text="Checking model..." Foreground="#BDBDC5" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="StopBackendButton" Grid.Column="1" Content="Unload model" Style="{StaticResource ModernButton}" Padding="14,9" ToolTip="Stops the model runtime and its current reply. Harness and model files are kept."/></Grid>
+                    <Border BorderBrush="#2B313B" BorderThickness="0,1,0,0" Padding="0,12,0,0" Margin="0,0,0,16"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Margin="0,0,16,0" VerticalAlignment="Center"><TextBlock Text="DeepSeek Harness" Foreground="#EEEEF2" FontWeight="SemiBold"/><TextBlock x:Name="HarnessControlStatus" Text="Checking Harness..." Foreground="#BDBDC5" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="14,9" ToolTip="Opens Harness without restarting your loaded model."/><Button x:Name="StopHarnessButton" Content="Close Harness" Style="{StaticResource ModernButton}" Padding="14,9" Margin="8,0,0,0" ToolTip="Stops the agent service and current task, not the model. Saved chats are kept. A browser tab may remain visible."/></WrapPanel></Grid></Border>
                     <WrapPanel Margin="0,4,0,5" VerticalAlignment="Center">
                       <CheckBox x:Name="AutoContinueCheck" Content="Auto-continue cut-off replies" Style="{StaticResource ModelVisibilityCheck}" VerticalAlignment="Center" Margin="0,0,20,0"/>
                       <TextBlock Text="Limit per request" Foreground="#BDBDC5" VerticalAlignment="Center" Margin="0,0,10,0"/>
@@ -3474,6 +3578,7 @@ try {
 $names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','RepoHelperCombo','HfDownloadExpander','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ShowAllModelsButton','HideAllModelsButton','ModelScanStatus','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 $names+=@('AutoContinueCheck','AutoContinueLimit','AutoContinueStatus')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
+foreach($n in @('ModelControlStatus','HarnessControlStatus')){Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script}
 $script:HeaderArea=$Window.FindName('HeaderArea');$script:PageTitle=$Window.FindName('PageTitle');$script:PageSubtitle=$Window.FindName('PageSubtitle')
 
 # Use the approved AgentPort lockup itself in the sidebar rather than re-typesetting it.
@@ -3559,7 +3664,7 @@ $SavedProfilesButton.Add_Click({ Show-ProfilesMenu })
 $BrowseModelsButton.Add_Click({ Switch-Page 'Models' })
 $StopBackendButton.Add_Click({ Stop-BackendOnly })
 $StopHarnessButton.Add_Click({ Stop-HarnessFromHome })
-$RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
+$RuntimeOpenUiButton.Add_Click({ Open-HarnessFromHome })
 $PurgeVramButton.Add_Click({ Purge-AgentPortVram })
 $ModelsNInferAction.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
 $McpManagerButton.Add_Click({ Show-AgentPortMcpManager })
@@ -3665,12 +3770,35 @@ if($SmokeTest){
 if($IntegrationCurrentModel){
     $Window.Add_ContentRendered({
         Start-UnifiedStack
-        $script:IntegrationDeadline=(Get-Date).AddMinutes(5)
+        $script:IntegrationStage='initial';$script:IntegrationTickBusy=$false
+        $script:IntegrationDeadline=(Get-Date).AddMinutes(10)
         $script:IntegrationCheck=[Windows.Threading.DispatcherTimer]::new()
         $script:IntegrationCheck.Interval=[TimeSpan]::FromSeconds(2)
         $script:IntegrationCheck.Add_Tick({
+            if($script:IntegrationTickBusy){return};$script:IntegrationTickBusy=$true
             try {
-                if($script:LaunchPhase -eq 7 -and (Test-Port 3080)){
+                if((Get-Date) -gt $script:IntegrationDeadline){throw ('Current-model lifecycle integration timed out at '+$script:IntegrationStage)}
+                if($script:StopOperation.Active){return}
+                if($script:IntegrationStage -eq 'closing-harness'){
+                    if(Test-Port 3080){throw ('Close Harness failed: '+$OperationDetail.Text)}
+                    if(-not (Test-AgentPortProcessIdentity $script:IntegrationModelOwner)){throw 'Closing Harness interrupted the loaded model.'}
+                    Write-Host 'Lifecycle PASS: Close Harness stopped port 3080; model PID and creation time unchanged.'
+                    $script:IntegrationStage='reopening-harness'
+                    $RuntimeOpenUiButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    return
+                }
+                if($script:IntegrationStage -eq 'unloading-model'){
+                    if(Test-Port $script:BackendPort){throw ('Unload model failed: '+$OperationDetail.Text)}
+                    if(-not (Test-Port 3080) -or -not (Test-AgentPortProcessIdentity $script:IntegrationHarnessOwner)){throw 'Unloading the model interrupted Harness.'}
+                    Write-Host 'Lifecycle PASS: Unload model closed the backend; Harness PID and creation time unchanged.'
+                    $script:IntegrationStage='reloading-model';Start-UnifiedStack;return
+                }
+                if($script:IntegrationStage -eq 'stopping-both'){
+                    if((Test-Port $script:BackendPort) -or (Test-Port 3080)){throw ('Stop both failed: '+$OperationDetail.Text)}
+                    Write-Host 'Current-model lifecycle integration PASS: real Home buttons; independent close/unload; reopen and reload; Harness prompts; stop both.'
+                    $script:IntegrationCheck.Stop();$Window.Close();return
+                }
+                if($script:LaunchState -eq 'idle' -and $script:LaunchPhase -eq 7 -and (Test-Port 3080) -and (Test-Port $script:BackendPort)){
                     $url=Get-HarnessStartupUrl
                     if(-not $url){return}
                     $response=Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5
@@ -3679,14 +3807,27 @@ if($IntegrationCurrentModel){
                     $completion=Invoke-RestMethod ("http://127.0.0.1:$script:BackendPort/v1/chat/completions") -Method Post -Headers @{Authorization='Bearer local-textgen'} -ContentType 'application/json' -Body $body -TimeoutSec 90
                     if(-not $completion.choices[0].message.content){throw 'Selected model returned no completion.'}
                     & (Join-Path $PSScriptRoot 'ninfer-4080\Test-AgentPortHarnessPrompt.ps1') -StartupUrl $url -ExpectedModel $script:PendingModel | ForEach-Object {Write-Host $_}
-                    Write-Host ('Current-model integration PASS: '+[IO.Path]::GetFileName($script:PendingModel)+'; Harness HTTP 200; backend completion: '+$completion.choices[0].message.content)
-                    $script:IntegrationCheck.Stop();$Window.Close();return
+                    Write-Host ('Current-model prompt PASS ('+$script:IntegrationStage+'): '+[IO.Path]::GetFileName($script:PendingModel)+'; Harness HTTP 200; backend completion: '+$completion.choices[0].message.content)
+                    if($script:IntegrationStage -eq 'initial'){
+                        $script:IntegrationModelOwner=$script:TextGenOwnership
+                        $script:IntegrationStage='closing-harness'
+                        $StopHarnessButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    } elseif($script:IntegrationStage -eq 'reopening-harness'){
+                        if(-not (Test-AgentPortProcessIdentity $script:IntegrationModelOwner)){throw 'Opening Harness restarted the model.'}
+                        $listener=netstat.exe -ano -p TCP | ForEach-Object {if($_ -match '^\s*TCP\s+\S+:3080\s+\S+\s+LISTENING\s+(\d+)') {[int]$Matches[1]}} | Select-Object -First 1
+                        $script:IntegrationHarnessOwner=Get-AgentPortProcessRecord $listener
+                        $script:IntegrationStage='unloading-model'
+                        $StopBackendButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    } else {
+                        if(-not (Test-AgentPortProcessIdentity $script:IntegrationHarnessOwner)){throw 'Reloading the same model restarted Harness.'}
+                        $script:IntegrationStage='stopping-both'
+                        $PurgeVramButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    }
                 }
-                if((Get-Date) -gt $script:IntegrationDeadline){throw 'Current-model integration timed out.'}
             } catch {
-                Write-Host ('Current-model integration FAIL: '+$_.Exception.Message)
+                Write-Host ('Current-model integration FAIL: '+$_.Exception.Message+' | '+$_.ScriptStackTrace)
                 $script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close()
-            }
+            } finally {$script:IntegrationTickBusy=$false}
         })
         $script:IntegrationCheck.Start()
     })

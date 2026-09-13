@@ -270,42 +270,68 @@ function Invoke-AgentPortExternalCommandCore {
 
 function Invoke-AgentPortStopPlansCore {
     param([Parameter(Mandatory)]$Plans)
+    if(-not (Get-Command Test-AgentPortProcessIdentity -ErrorAction SilentlyContinue)){. (Join-Path $PSScriptRoot 'AgentPort.NInfer.ps1')}
     $stopped=New-Object System.Collections.Generic.List[int]
     $skipped=New-Object System.Collections.Generic.List[int]
     $unowned=New-Object System.Collections.Generic.List[int]
+    $attempted=New-Object System.Collections.Generic.List[int]
+    $failed=New-Object System.Collections.Generic.List[int]
+    $failures=New-Object System.Collections.Generic.List[object]
+    $expectedByPid=@{}
     foreach($plan in @($Plans)){
         foreach($listenerPid in @($plan.UnownedListenerPids)){if([int]$listenerPid -gt 0){[void]$unowned.Add([int]$listenerPid)}}
         foreach($expected in @($plan.Processes|Sort-Object @{Expression={$_.Depth};Descending=$true},Pid)){
             $targetPid=[int]$expected.Pid
-            try{$current=Get-CimInstance Win32_Process -Filter "ProcessId=$targetPid" -ErrorAction Stop}catch{$current=$null}
+            if($targetPid -le 0 -or $expectedByPid.ContainsKey($targetPid)){continue}
+            $expectedByPid[$targetPid]=$expected
+            try{$current=Get-AgentPortProcessRecord $targetPid -ThrowOnQueryFailure}
+            catch{[void]$failed.Add($targetPid);[void]$failures.Add([pscustomobject]@{Pid=$targetPid;Message=('Could not verify process identity: '+$_.Exception.Message)});continue}
             if(-not $current){continue}
-            $startExpected=$null;$startCurrent=$null
-            try{$startExpected=[Management.ManagementDateTimeConverter]::ToDateTime([string]$expected.StartTime).ToUniversalTime()}catch{try{$startExpected=([datetime]$expected.StartTime).ToUniversalTime()}catch{}}
-            try{$startCurrent=[Management.ManagementDateTimeConverter]::ToDateTime([string]$current.CreationDate).ToUniversalTime()}catch{try{$startCurrent=([datetime]$current.CreationDate).ToUniversalTime()}catch{}}
-            $sameStart=$startExpected -and $startCurrent -and $startExpected.Ticks -eq $startCurrent.Ticks
-            $samePath=([string]$expected.ExecutablePath -eq [string]$current.ExecutablePath)
-            $sameCommand=([string]$expected.CommandLine -eq [string]$current.CommandLine)
-            if(-not ($sameStart -and $samePath -and $sameCommand)){[void]$skipped.Add($targetPid);continue}
-            try{Stop-Process -Id $targetPid -Force -ErrorAction Stop;[void]$stopped.Add($targetPid)}catch{}
+            if(-not (Test-AgentPortProcessIdentity $expected @($current))){[void]$skipped.Add($targetPid);continue}
+            try{Stop-Process -Id $targetPid -Force -ErrorAction Stop;[void]$attempted.Add($targetPid)}
+            catch{[void]$failed.Add($targetPid);[void]$failures.Add([pscustomobject]@{Pid=$targetPid;Message=$_.Exception.Message})}
         }
     }
-    # A stop is not successful merely because Stop-Process returned. Give owned
-    # listeners a bounded window to close, then report every port still in use.
-    $remaining=New-Object System.Collections.Generic.List[int]
-    $ports=@($Plans|ForEach-Object{[int]$_.Port}|Where-Object{$_ -gt 0}|Select-Object -Unique)
+    # Verify all captured owned processes, including wrappers and backends
+    # that never opened a port. A successful Stop-Process call is only an
+    # attempt until the original identity has actually disappeared.
+    $remainingOwned=New-Object System.Collections.Generic.List[int]
     $deadline=(Get-Date).AddSeconds(5)
     do {
-        $remaining.Clear()
-        foreach($port in $ports){
-            foreach($line in @(& netstat.exe -ano -p TCP 2>$null)){
+        $remainingOwned.Clear()
+        foreach($targetPid in @($expectedByPid.Keys)){
+            try{
+                $current=Get-AgentPortProcessRecord $targetPid -ThrowOnQueryFailure
+                if($current -and (Test-AgentPortProcessIdentity $expectedByPid[$targetPid] @($current))){[void]$remainingOwned.Add($targetPid)}
+            } catch {
+                if(-not $failed.Contains($targetPid)){[void]$failed.Add($targetPid);[void]$failures.Add([pscustomobject]@{Pid=$targetPid;Message=('Could not verify process exit: '+$_.Exception.Message)})}
+            }
+        }
+        if($remainingOwned.Count -eq 0 -or $attempted.Count -eq 0){break}
+        Start-Sleep -Milliseconds 100
+    } while((Get-Date) -lt $deadline)
+    foreach($targetPid in $attempted){
+        if($remainingOwned.Contains($targetPid)){
+            if(-not $failed.Contains($targetPid)){[void]$failed.Add($targetPid);[void]$failures.Add([pscustomobject]@{Pid=$targetPid;Message='The owned process did not exit within five seconds.'})}
+        } elseif(-not $failed.Contains($targetPid)){[void]$stopped.Add($targetPid)}
+    }
+    # Ports are reporting hints only. Never expand the stop targets to include
+    # a new or unrelated listener discovered after the ownership snapshot.
+    $remaining=New-Object System.Collections.Generic.List[int]
+    $ports=@($Plans|ForEach-Object{[int]$_.Port}|Where-Object{$_ -gt 0}|Select-Object -Unique)
+    if($ports.Count -gt 0){
+        $netstat=@(& netstat.exe -ano -p TCP 2>$null)
+        if($LASTEXITCODE -ne 0){throw 'Could not verify listening ports after the stop operation.'}
+        foreach($line in $netstat){
+            foreach($port in $ports){
                 if($line -match ('^\s*TCP\s+\S+:'+([regex]::Escape([string]$port))+'\s+\S+\s+LISTENING\s+(\d+)\s*$')){[void]$remaining.Add([int]$Matches[1])}
             }
         }
-        if($remaining.Count -eq 0 -or $stopped.Count -eq 0){break}
-        Start-Sleep -Milliseconds 100
-    } while((Get-Date) -lt $deadline)
+    }
     return [pscustomobject]@{
         StoppedPids=$stopped.ToArray();SkippedPids=$skipped.ToArray()
+        FailedPids=@($failed.ToArray()|Select-Object -Unique);FailureDetails=$failures.ToArray()
+        RemainingOwnedPids=@($remainingOwned.ToArray()|Select-Object -Unique)
         UnownedListenerPids=@($unowned.ToArray()|Select-Object -Unique)
         RemainingListenerPids=@($remaining.ToArray()|Select-Object -Unique)
         CompletedAt=(Get-Date).ToString('o')
