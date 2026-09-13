@@ -46,7 +46,7 @@ public static class AgentPortShellIdentity {
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.3.2'
+$script:AppVersion = '2.3.3'
 $script:AgentPortRoot = $PSScriptRoot
 $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
@@ -111,6 +111,7 @@ $script:Defaults = [ordered]@{
     max_tokens = 2048
     active_model = ''
     active_context_tokens = 0
+    harness_base_url = ''
     active_offload_mode = ''
     harness_runtime = 'auto'
     harness_last_update = ''
@@ -1708,9 +1709,9 @@ function Open-HarnessFromHome {
         if(-not $fallbackModel){throw 'Install or select a GGUF model first so Harness has a profile to start.'}
 
         $fallbackContext=[int]$script:Config.active_context_tokens
-        if(-not $fallbackContext -or -not $script:ContextPresets.Values.Contains($fallbackContext)){
+        if(-not $fallbackContext -or $script:ContextPresets.Values -notcontains $fallbackContext){
             $label=[string]$script:Config.last_context
-            if($label -and $script:ContextPresets.ContainsKey($label)){
+            if($label -and $script:ContextPresets.Contains($label)){
                 $fallbackContext=[int]$script:ContextPresets[$label]
             }else{
                 $fallbackContext=49152
@@ -2379,6 +2380,19 @@ function Start-Harness {
         if(-not $script:HarnessOwnership){throw 'An older or unverified Harness is still running. Use Close Harness, then Open Harness to reconnect it.'}
         return
     }
+    $processEnv=[Environment]::GetEnvironmentVariables([EnvironmentVariableTarget]::Process)
+    $hadHarnessBaseUrl=$processEnv.Contains('DEEPSEEK_BASE_URL')
+    $originalHarnessBaseUrl=if($hadHarnessBaseUrl){[string]$processEnv['DEEPSEEK_BASE_URL']}else{$null}
+    try {
+        $configuredHarnessBaseUrl=[string]$script:Config.harness_base_url
+        if(-not [string]::IsNullOrWhiteSpace($configuredHarnessBaseUrl)){
+            foreach($ch in $configuredHarnessBaseUrl.ToCharArray()){
+                if([char]::IsControl($ch)){throw 'Harness base URL must not contain control characters.'}
+            }
+            try {$baseUri=[Uri]::new($configuredHarnessBaseUrl,[UriKind]::Absolute)} catch {throw 'Harness base URL must be an absolute HTTP(S) URL.'}
+            if(-not $baseUri.IsAbsoluteUri -or $baseUri.Scheme -notin @('http','https') -or -not $baseUri.Host -or $baseUri.UserInfo){throw 'Harness base URL must be an absolute HTTP(S) URL without userinfo.'}
+            $env:DEEPSEEK_BASE_URL=$configuredHarnessBaseUrl
+        }
     Ensure-AgentPortRuntimeDirs
     Repair-HarnessSettingsFile | Out-Null
     Repair-AgentPortPresetCompatibility
@@ -2442,6 +2456,9 @@ function Start-Harness {
     if($script:StopOperation.Active -or $script:StopOperation.Generation -ne $startGeneration){return}
     $script:HarnessProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
     $script:HarnessOwnership=Get-AgentPortProcessRecord ([int]$script:HarnessProcess.Id) $script:HarnessProcess
+    } finally {
+        if($hadHarnessBaseUrl){$env:DEEPSEEK_BASE_URL=$originalHarnessBaseUrl}else{Remove-Item Env:DEEPSEEK_BASE_URL -ErrorAction SilentlyContinue}
+    }
 }
 
 function Update-DeepSeekHarness {

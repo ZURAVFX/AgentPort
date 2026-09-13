@@ -17,6 +17,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.24.x'
+      - name: Check Windows PowerShell startup and Home buttons
+        shell: powershell
+        run: |
+          & .\src\ninfer-4080\Test-AgentPortLifecycleUi.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortStartupCancellation.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortHarnessEnvironment.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build executable
         shell: pwsh
         run: |
