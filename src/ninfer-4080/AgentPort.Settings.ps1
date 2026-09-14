@@ -156,6 +156,37 @@ function Set-AgentPortNInferSettings {
     Invoke-AgentPortYamlSettingsMutation -Path $Path -Operations $operations -BackupPath ($Path+'.before-agentport-settings')
 }
 
+function Set-AgentPortOmniRouteSettings {
+    param(
+        [Parameter(Mandatory=$true)][string]$Path,
+        [Parameter(Mandatory=$true)][ValidateNotNullOrEmpty()][string]$Model,
+        [Parameter(Mandatory=$false)][string]$DisplayName='OmniRoute Cloud',
+        [Parameter(Mandatory=$false)][ValidateRange(1,2147483647)][int]$Context=32768,
+        [Parameter(Mandatory=$false)][ValidateRange(1,2147483647)][int]$MaxTokens=4096,
+        [Parameter(Mandatory=$false)][ValidateRange(1,65535)][int]$Port=20128,
+        [Parameter(Mandatory=$false)][bool]$SetDefault=$true
+    )
+    if([string]::IsNullOrWhiteSpace($DisplayName)){$DisplayName='OmniRoute Cloud'}
+    # The API key is deliberately represented only by its environment variable
+    # name. The runtime supplies OMNIROUTE_API_KEY for the active session.
+    $provider=[ordered]@{
+        displayName='OmniRoute Cloud'
+        apiKeyEnv='OMNIROUTE_API_KEY'
+        api='openai-completions'
+        baseURL=('http://127.0.0.1:{0}/v1' -f $Port)
+        defaultInput=@('text')
+        timeoutMs=3600000
+        streamIdleTimeoutMs=3600000
+        websocketConnectTimeoutMs=3600000
+        retryPolicy=[ordered]@{mode='normal';maxRetries=0}
+        models=@([ordered]@{id=$Model;name=$DisplayName;contextWindow=$Context;maxTokens=$MaxTokens;input=@('text')})
+    }
+    $operations=New-Object System.Collections.Generic.List[object]
+    [void]$operations.Add([pscustomobject]@{kind='ensure-provider';provider='agentport-omniroute';value=$provider})
+    if($SetDefault){[void]$operations.Add([pscustomobject]@{kind='set-default-model';provider='agentport-omniroute';model=$Model})}
+    return Invoke-AgentPortYamlSettingsMutation -Path $Path -Operations $operations.ToArray() -BackupPath ($Path+'.before-agentport-omniroute-settings')
+}
+
 function Set-AgentPortPresetDefault {
     param(
         [Parameter(Mandatory=$true)][string]$Path,

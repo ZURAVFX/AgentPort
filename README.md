@@ -6,7 +6,7 @@ It detects NVIDIA hardware, manages a CUDA-accelerated GGUF backend, connects th
 
 ## Download
 
-**[Download AgentPort v2.3.3 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.3.3/AgentPort.exe)**
+**[Download AgentPort v2.4.0 for Windows](https://github.com/ZURAVFX/AgentPort/releases/download/v2.4.0/AgentPort.exe)**
 
 The EXE is portable. Download it and double-click it. AgentPort gives visible progress while it prepares anything missing.
 
@@ -37,6 +37,7 @@ For an NVIDIA GPU with 16 GB VRAM, the tested default is Qwen3-Coder 30B A3B at 
 - installs a faster, action-first Qwen preset to reduce unnecessary overthinking
 - guides ComfyUI, Blender and general MCP configuration
 - manages Harness-only skills without mixing them into other agent applications
+- optionally connects Harness to cloud models through a locally managed OmniRoute gateway
 
 TextGen is not required. Existing TextGen model folders may still be scanned so users can reuse GGUF files they already downloaded, but AgentPort runs those files with its own managed backend.
 
@@ -58,6 +59,12 @@ The Models page separates three jobs clearly:
 - **Advanced:** import a local GGUF with an optional helper, or inspect and download a quant from Hugging Face.
 
 NInfer remains available as an optional RTX 4080 fast-chat experiment. It requires its own converted model and cannot load arbitrary GGUF or safetensors files. On a 16 GB card it is limited to roughly 16k to 24k context, so the recommended 48k GGUF backend is the default for Harness tools and MCP workflows.
+
+## Optional cloud models
+
+On Home, choose **Start / setup** under **Cloud AI through OmniRoute**. AgentPort installs a tested OmniRoute version, opens its provider setup, and then lets you refresh and explicitly select an available route for Harness. OmniRoute runs locally as the gateway, while inference runs on the provider you connect.
+
+AgentPort never silently falls back from a free route to a paid one. Provider free tiers, quotas and availability are controlled by those providers, so OmniRoute itself is not unlimited free compute.
 
 ## Skills and MCPs
 

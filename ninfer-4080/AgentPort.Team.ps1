@@ -123,7 +123,7 @@ function Start-AgentPortTeam {
             [Windows.Forms.Application]::DoEvents();Start-Sleep -Milliseconds 200
         }
         $script:PendingModel='agentport-fast-qwen3-coder';$script:PendingContext=49152
-        $script:Config.last_model=$script:PendingModel;$script:Config.active_model=$script:PendingModel
+        $script:Config.last_model=$script:PendingModel;$script:Config.active_model=$script:PendingModel;$script:Config.active_backend='local'
         $script:Config.active_context_tokens=49152;$script:Config.active_offload_mode='AgentPort Fast';Save-Config
         $script:TeamHarnessPatch=New-NInferHarnessPatch (Join-Path $logs 'harness.patch.yml')
         if($script:StopOperation.Generation -ne $startGeneration){$script:LaunchState='idle';Set-Log 'Model loaded. Harness was left closed as requested.' 'ok';return}

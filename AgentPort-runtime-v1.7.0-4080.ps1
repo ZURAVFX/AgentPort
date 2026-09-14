@@ -53,6 +53,7 @@ $script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $Integr
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.NInfer.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Background.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Settings.ps1')
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.OmniRoute.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Mcp.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Team.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Presets.ps1')
@@ -112,6 +113,10 @@ $script:Defaults = [ordered]@{
     active_model = ''
     active_context_tokens = 0
     harness_base_url = ''
+    active_backend = 'local'
+    omniroute_api_key = ''
+    omniroute_model = ''
+    omniroute_context = 32768
     active_offload_mode = ''
     harness_runtime = 'auto'
     harness_last_update = ''
@@ -1596,6 +1601,7 @@ function Kill-Stack {
     $harnessPlan=Get-AgentPortStopPlan -Kind harness -Port 3080 -OwnedProcess $script:HarnessOwnership -HarnessRoot ([string]$script:Config.harness_root) -NpmCacheRoot ([string]$script:NpmCacheDir) -PortableNodeDir ([string]$script:PortableNodeDir) -TextGenRoot ([string]$script:Config.textgen_root) -ManagedRuntimeRoot (Join-Path $script:AppDataDir 'llama-b10809')
     if($IntegrationTest){Write-Host ('Stop ownership: backend targets='+(@($backendPlan.Processes|ForEach-Object{$_.Pid}) -join ',')+'; Harness targets='+(@($harnessPlan.Processes|ForEach-Object{$_.Pid}) -join ',')+'; unowned listeners='+(@($backendPlan.UnownedListenerPids)+@($harnessPlan.UnownedListenerPids) -join ','))}
     if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
+    if(Get-Command Stop-AgentPortOmniRoute -ErrorAction SilentlyContinue){Stop-AgentPortOmniRoute | Out-Null}
     Stop-AgentPortStopPlan $backendPlan | Out-Null
     Stop-AgentPortStopPlan $harnessPlan | Out-Null
     Stop-StaleNInferInstances
@@ -1702,16 +1708,19 @@ function Open-HarnessFromHome {
             return
         }
         $selected=Get-SelectedModel
-        $fallbackModel=[string]$script:Config.active_model
+        $isCloud=([string]$script:Config.active_backend -eq 'omniroute')
+        if($isCloud){Start-AgentPortOmniRoute}
+        $fallbackModel=if($isCloud){[string]$script:Config.omniroute_model}else{[string]$script:Config.active_model}
+        if($isCloud -and [string]::IsNullOrWhiteSpace($fallbackModel)){throw 'Select a cloud model on Home before opening Harness.'}
         if(-not $fallbackModel -and $selected){$fallbackModel=[string]$selected.RelPath}
         if(-not $fallbackModel -and [string]$script:Config.last_model){$fallbackModel=[string]$script:Config.last_model}
         if(-not $fallbackModel -and $script:HomeModels.Count -gt 0){$fallbackModel=[string]$script:HomeModels[0].RelPath}
         if(-not $fallbackModel){throw 'Install or select a GGUF model first so Harness has a profile to start.'}
 
-        $fallbackContext=[int]$script:Config.active_context_tokens
+        $fallbackContext=if($isCloud){[int]$script:Config.omniroute_context}else{[int]$script:Config.active_context_tokens}
         if(-not $fallbackContext -or $script:ContextPresets.Values -notcontains $fallbackContext){
             $label=[string]$script:Config.last_context
-            if($label -and $script:ContextPresets.Contains($label)){
+            if($label -and @($script:ContextPresets.Keys) -contains $label){
                 $fallbackContext=[int]$script:ContextPresets[$label]
             }else{
                 $fallbackContext=49152
@@ -2383,7 +2392,14 @@ function Start-Harness {
     $processEnv=[Environment]::GetEnvironmentVariables([EnvironmentVariableTarget]::Process)
     $hadHarnessBaseUrl=$processEnv.Contains('DEEPSEEK_BASE_URL')
     $originalHarnessBaseUrl=if($hadHarnessBaseUrl){[string]$processEnv['DEEPSEEK_BASE_URL']}else{$null}
+    $hadOmniRouteKey=$processEnv.Contains('OMNIROUTE_API_KEY')
+    $originalOmniRouteKey=if($hadOmniRouteKey){[string]$processEnv['OMNIROUTE_API_KEY']}else{$null}
     try {
+        if([string]$script:Config.active_backend -eq 'omniroute'){
+            $cloudKey=Get-AgentPortOmniRouteKey
+            if([string]::IsNullOrWhiteSpace($cloudKey)){throw 'Paste the OmniRoute endpoint key on Home before opening Harness.'}
+            $env:OMNIROUTE_API_KEY=$cloudKey
+        }
         $configuredHarnessBaseUrl=[string]$script:Config.harness_base_url
         if(-not [string]::IsNullOrWhiteSpace($configuredHarnessBaseUrl)){
             foreach($ch in $configuredHarnessBaseUrl.ToCharArray()){
@@ -2458,8 +2474,19 @@ function Start-Harness {
     $script:HarnessOwnership=Get-AgentPortProcessRecord ([int]$script:HarnessProcess.Id) $script:HarnessProcess
     } finally {
         if($hadHarnessBaseUrl){$env:DEEPSEEK_BASE_URL=$originalHarnessBaseUrl}else{Remove-Item Env:DEEPSEEK_BASE_URL -ErrorAction SilentlyContinue}
+        if($hadOmniRouteKey){$env:OMNIROUTE_API_KEY=$originalOmniRouteKey}else{Remove-Item Env:OMNIROUTE_API_KEY -ErrorAction SilentlyContinue}
     }
 }
+
+function Refresh-AgentPortOmniRouteUi {
+    if(-not $OmniRouteStatus){return}
+    if(Test-Port $script:OmniRoutePort){$OmniRouteStatus.Text='Gateway running. Connect a provider, paste its endpoint key, then refresh models.';$OmniRouteStatus.Foreground='#8AF5B5'}
+    elseif(Test-AgentPortOmniRouteInstalled){$OmniRouteStatus.Text='Installed and stopped. Click Start / setup to open provider setup.';$OmniRouteStatus.Foreground='#BDBDC5'}
+    else{$OmniRouteStatus.Text='Optional cloud gateway. Free access depends on provider limits and availability.';$OmniRouteStatus.Foreground='#BDBDC5'}
+}
+function Setup-AgentPortOmniRouteFromHome {try{$OmniRouteSetupButton.IsEnabled=$false;Install-AgentPortOmniRoute;Start-AgentPortOmniRoute;Refresh-AgentPortOmniRouteUi;Open-AgentPortOmniRouteDashboard;Set-OperationFeedback 'Cloud setup opened' 'Connect a free provider and create an endpoint key in OmniRoute. Paste it here, then click Refresh models.' 'ok'}catch{Set-OperationFeedback 'Cloud setup needs attention' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error'}finally{$OmniRouteSetupButton.IsEnabled=$true}}
+function Refresh-AgentPortOmniRouteModelsUi {try{$OmniRouteRefreshButton.IsEnabled=$false;Start-AgentPortOmniRoute;$key=$OmniRouteKeyBox.Password;if([string]::IsNullOrWhiteSpace($key)){$key=Get-AgentPortOmniRouteKey}else{Save-AgentPortOmniRouteKey $key};if([string]::IsNullOrWhiteSpace($key)){throw 'Create an endpoint key in OmniRoute and paste it here first.'};$models=@(Get-AgentPortOmniRouteModels $key);$OmniRouteModelCombo.Items.Clear();foreach($model in $models){$item=New-Object System.Windows.Controls.ComboBoxItem;$item.Content=($model.Name+'  ['+$model.Id+']'+$(if($model.IsFree){'  Free metadata'}else{''}));$item.Tag=$model;[void]$OmniRouteModelCombo.Items.Add($item);if([string]$model.Id -eq [string]$script:Config.omniroute_model){$OmniRouteModelCombo.SelectedItem=$item}};if($models.Count -eq 0){throw 'No models are available yet. Connect a provider in OmniRoute, then refresh.'};Set-OperationFeedback 'Cloud models refreshed' ($models.Count.ToString()+' exact routes found. Select one explicitly; AgentPort will not choose a paid fallback.') 'ok'}catch{Set-OperationFeedback 'Could not load cloud models' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error'}finally{$OmniRouteRefreshButton.IsEnabled=$true;Refresh-AgentPortOmniRouteUi}}
+function Start-AgentPortOmniRouteFromHome {try{$selected=$OmniRouteModelCombo.SelectedItem;if(-not $selected -or -not $selected.Tag){throw 'Refresh cloud models and select the exact route you want to use.'};$model=$selected.Tag;$key=$OmniRouteKeyBox.Password;if([string]::IsNullOrWhiteSpace($key)){$key=Get-AgentPortOmniRouteKey}else{Save-AgentPortOmniRouteKey $key};if([string]::IsNullOrWhiteSpace($key)){throw 'Paste the OmniRoute endpoint key first.'};Start-AgentPortOmniRoute;$context=[int][math]::Min([int64]$model.Context,131072);[void](Set-AgentPortOmniRouteSettings -Path $script:SettingsPath -Model $model.Id -DisplayName $model.Name -Context $context -MaxTokens 4096 -Port $script:OmniRoutePort);if(Test-Port 3080){if(-not $script:HarnessOwnership){throw 'An unverified Harness is already running. Close it before switching cloud models.'};[void](Kill-HarnessOnly)};$script:PendingModel=[string]$model.Id;$script:PendingContext=$context;$script:Config.active_backend='omniroute';$script:Config.omniroute_model=$script:PendingModel;$script:Config.omniroute_context=$context;Save-Config;$script:LaunchState='wait_harness';$script:LaunchDeadline=(Get-Date).AddMinutes(2);$PrimaryButton.IsEnabled=$false;Set-LaunchPhase 6 'Opening cloud agent' 'Starting Harness with the exact OmniRoute route you selected.' 92;Start-Harness}catch{$script:LaunchState='idle';$PrimaryButton.IsEnabled=$true;Set-OperationFeedback 'Cloud agent could not start' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error'}}
 
 function Update-DeepSeekHarness {
     if($script:StopOperation.Active){Set-Log 'Wait for the current stop operation to finish before updating Harness.' 'error';return}
@@ -3018,6 +3045,7 @@ function Start-UnifiedStack {
         $script:Config.draft_mtp=($spec -ne 'Off')
         $script:Config.max_tokens=$max
         $script:Config.active_model=$m.RelPath
+        $script:Config.active_backend='local'
         $script:Config.active_context_tokens=$ctx
         $script:Config.active_offload_mode=$offload
         Save-Config
@@ -3227,7 +3255,7 @@ function Poll-Launch {
                 return
             }
             $isNInfer=($script:PendingModel -eq 'qwen3.8-27b-minq4')
-            $backend=if($isNInfer){'NInfer RTX 4080'}elseif($script:PendingModel -eq 'agentport-fast-qwen3-coder'){'AgentPort Fast'}else{'Compatible GGUF runtime'}
+            $backend=if([string]$script:Config.active_backend -eq 'omniroute'){'OmniRoute Cloud'}elseif($isNInfer){'NInfer RTX 4080'}elseif($script:PendingModel -eq 'agentport-fast-qwen3-coder'){'AgentPort Fast'}else{'Compatible GGUF runtime'}
             Set-LaunchPhase 7 'Ready' "$backend, the selected model and Harness are synchronised." 100 'ok'
             Set-Log "$backend + Harness are synchronised and ready." 'ok'
             Update-BackendSelectionUi
@@ -3486,6 +3514,8 @@ function Show-ProfilesMenu {
                   </Grid>
                 </Border>
 
+                <Border Background="#10131B" BorderBrush="#3A4260" BorderThickness="1" CornerRadius="18" Padding="22,14" Margin="0,0,0,9"><StackPanel><Grid Margin="0,0,0,9"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Cloud AI through OmniRoute" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Optional online models without using your GPU. Free access depends on provider quotas and availability; AgentPort never silently selects a paid fallback." Foreground="#A7A7B0" FontSize="11" Margin="0,3,16,0" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="1"><Button x:Name="OmniRouteSetupButton" Content="Start / setup" Style="{StaticResource ModernButton}" Padding="13,8"/><Button x:Name="OmniRouteDashboardButton" Content="Providers" Style="{StaticResource ModernButton}" Padding="13,8" Margin="8,0,0,0"/></WrapPanel></Grid><TextBlock x:Name="OmniRouteStatus" Text="Checking cloud gateway..." Foreground="#BDBDC5" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Endpoint key" Foreground="#D8D8DE" FontSize="11" Margin="0,0,0,6"/><PasswordBox x:Name="OmniRouteKeyBox" Height="42" Padding="12,8" Background="#0B0F14" Foreground="#F4F4F6" BorderBrush="#2A3039" ToolTip="Stored encrypted for this Windows user; never written to Harness settings or logs."/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="Exact model route" Foreground="#D8D8DE" FontSize="11" Margin="0,0,0,6"/><ComboBox x:Name="OmniRouteModelCombo"/></StackPanel></Grid><WrapPanel Margin="0,10,0,0"><Button x:Name="OmniRouteRefreshButton" Content="Refresh models" Style="{StaticResource ModernButton}" Padding="13,8"/><Button x:Name="OmniRouteStartButton" Content="Start in Harness" Style="{StaticResource PrimaryButtonStyle}" FontSize="13" Padding="15,8" Margin="8,0,0,0"/><Button x:Name="OmniRouteStopButton" Content="Stop cloud gateway" Style="{StaticResource ModernButton}" Padding="13,8" Margin="8,0,0,0"/></WrapPanel></StackPanel></Border>
+
                 <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22,14" Margin="0,0,0,9">
                   <StackPanel>
                     <Grid Margin="0,0,0,9"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Choose a model" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Select a model, check its context, then start your local agent." Foreground="#A7A7B0" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="HomeRecommendedButton" Visibility="Collapsed" Grid.Column="1" Content="Download &amp; start recommended" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="18,11"/></Grid>
@@ -3609,6 +3639,7 @@ try {
 
 $names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','RepoHelperCombo','HfDownloadExpander','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ShowAllModelsButton','HideAllModelsButton','ModelScanStatus','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
 $names+=@('AutoContinueCheck','AutoContinueLimit','AutoContinueStatus')
+$names+=@('OmniRouteSetupButton','OmniRouteDashboardButton','OmniRouteStatus','OmniRouteKeyBox','OmniRouteModelCombo','OmniRouteRefreshButton','OmniRouteStartButton','OmniRouteStopButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
 foreach($n in @('ModelControlStatus','HarnessControlStatus')){Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script}
 $script:HeaderArea=$Window.FindName('HeaderArea');$script:PageTitle=$Window.FindName('PageTitle');$script:PageSubtitle=$Window.FindName('PageSubtitle')
@@ -3686,6 +3717,11 @@ $NavSettings.Add_Click({ Switch-Page 'Settings' })
 $HomeRecommendedButton.Add_Click({[void](Select-HomeModel 'agentport-fast-qwen3-coder');Start-AgentPortTeam})
 $ExistingModelButton.Add_Click({Switch-Page 'Models'})
 $ToolSetupButton.Add_Click({Show-AgentPortMcpManager})
+$OmniRouteSetupButton.Add_Click({Setup-AgentPortOmniRouteFromHome})
+$OmniRouteDashboardButton.Add_Click({try{Start-AgentPortOmniRoute;Open-AgentPortOmniRouteDashboard}catch{Set-OperationFeedback 'Cloud gateway unavailable' $_.Exception.Message 'error'}})
+$OmniRouteRefreshButton.Add_Click({Refresh-AgentPortOmniRouteModelsUi})
+$OmniRouteStartButton.Add_Click({Start-AgentPortOmniRouteFromHome})
+$OmniRouteStopButton.Add_Click({if(Stop-AgentPortOmniRoute){Set-OperationFeedback 'Cloud gateway stopped' 'Harness and local models were left unchanged.' 'ok'}else{Set-OperationFeedback 'Cloud gateway not stopped' 'AgentPort did not own a running OmniRoute process.' 'error'};Refresh-AgentPortOmniRouteUi})
 
 $ModelCombo.Add_SelectionChanged({ Update-MemoryFit; Update-BackendSelectionUi })
 $ContextCombo.Add_SelectionChanged({ Update-MemoryFit })
@@ -3776,6 +3812,7 @@ Refresh-NInferControls
 Switch-Page 'Home'
 Update-BackendSelectionUi
 Refresh-Runtime
+Refresh-AgentPortOmniRouteUi
 if($ModelScanStatus){$ModelScanStatus.Text='Discovering local models in the background. The catalogue above is cached and may be stale.';$ModelScanStatus.Foreground='#B9ADE8'}
 try { Start-ModelScanAsync | Out-Null } catch { if($ModelScanStatus){$ModelScanStatus.Text='Showing cached models. Scan could not start.'} }
 Set-Log 'AgentPort is ready. Choose the recommended setup or use an existing GGUF.' 'ok'

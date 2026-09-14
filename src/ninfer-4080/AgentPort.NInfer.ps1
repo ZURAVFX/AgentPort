@@ -454,6 +454,7 @@ function Start-AgentPortNInfer {
         Update-NInferHarnessSettings $script:PendingContext $harnessMaxTokens
         $script:Config.last_model=$script:PendingModel
         $script:Config.active_model=$script:PendingModel
+        $script:Config.active_backend='local'
         $script:Config.active_context_tokens=$script:PendingContext
         $script:Config.active_offload_mode='NInfer MTP3 (full GPU)'
         Save-Config

@@ -26,6 +26,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .\src\ninfer-4080\Test-AgentPortHarnessEnvironment.ps1
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortOmniRouteSettings.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortOmniRoute.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Build executable
         shell: pwsh
         run: |
