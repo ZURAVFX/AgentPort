@@ -1,4 +1,4 @@
-param([switch]$SmokeTest,[switch]$IntegrationTest)
+param([switch]$SmokeTest,[switch]$IntegrationTest,[switch]$IntegrationCurrentModel)
 Add-Type -AssemblyName PresentationFramework, PresentationCore, WindowsBase
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -9,17 +9,51 @@ using System.Runtime.InteropServices;
 public static class AgentPortShellIdentity {
     [DllImport("shell32.dll", SetLastError=true)]
     public static extern int SetCurrentProcessExplicitAppUserModelID([MarshalAs(UnmanagedType.LPWStr)] string appID);
+    [DllImport("shell32.dll")]
+    public static extern void SHChangeNotify(uint eventId, uint flags, IntPtr item1, IntPtr item2);
+    [DllImport("shell32.dll")]
+    static extern int SHGetPropertyStoreForWindow(IntPtr hwnd, ref Guid iid, [Out, MarshalAs(UnmanagedType.Interface)] out IPropertyStore store);
+    [DllImport("user32.dll", CharSet=CharSet.Unicode)]
+    static extern IntPtr LoadImage(IntPtr instance, string name, uint type, int cx, int cy, uint flags);
+    [DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wParam, IntPtr lParam);
+    [ComImport, Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IPropertyStore {
+        uint GetCount(); void GetAt(uint index, out PropertyKey key); void GetValue(ref PropertyKey key, out PropVariant value);
+        void SetValue(ref PropertyKey key, ref PropVariant value); void Commit();
+    }
+    [StructLayout(LayoutKind.Sequential, Pack=4)] struct PropertyKey { public Guid formatId; public uint propertyId; }
+    [StructLayout(LayoutKind.Explicit)] struct PropVariant {
+        [FieldOffset(0)] public ushort valueType; [FieldOffset(8)] public IntPtr pointer;
+    }
+    static IntPtr smallIcon=IntPtr.Zero, bigIcon=IntPtr.Zero;
+    public static void ApplyWindowIdentity(IntPtr hwnd, string appId, string iconPath) {
+        Guid iid=new Guid("886D8EEB-8CF2-4446-8D02-CDBA1DBDCF99"); IPropertyStore store;
+        int result=SHGetPropertyStoreForWindow(hwnd,ref iid,out store);
+        if(result==0) {
+            PropertyKey key=new PropertyKey{formatId=new Guid("9F4C2855-9F79-4B39-A8D0-E1D42DE1D5F3"),propertyId=5};
+            PropVariant value=new PropVariant{valueType=31,pointer=Marshal.StringToCoTaskMemUni(appId)};
+            try { store.SetValue(ref key,ref value); store.Commit(); } finally { Marshal.FreeCoTaskMem(value.pointer); Marshal.ReleaseComObject(store); }
+        } else { Marshal.ThrowExceptionForHR(result); }
+        smallIcon=LoadImage(IntPtr.Zero,iconPath,1,16,16,0x10); bigIcon=LoadImage(IntPtr.Zero,iconPath,1,32,32,0x10);
+        if(smallIcon!=IntPtr.Zero) SendMessage(hwnd,0x80,IntPtr.Zero,smallIcon);
+        if(bigIcon!=IntPtr.Zero) SendMessage(hwnd,0x80,new IntPtr(1),bigIcon);
+        if(smallIcon==IntPtr.Zero || bigIcon==IntPtr.Zero) throw new InvalidOperationException("AgentPort window icons could not be loaded.");
+    }
 }
 "@
 [void][AgentPortShellIdentity]::SetCurrentProcessExplicitAppUserModelID('ZURAVFX.AgentPort')
 } catch {}
 
 $ErrorActionPreference = 'Stop'
-$script:AppVersion = '2.0.1'
+$script:AppVersion = '2.3.3'
 $script:AgentPortRoot = $PSScriptRoot
-$script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest)
+$script:OpenHarnessWhenReady = -not ($SmokeTest -or $IntegrationTest -or $IntegrationCurrentModel)
 . (Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.NInfer.ps1')
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Background.ps1')
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Settings.ps1')
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.OmniRoute.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Mcp.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Team.ps1')
 . (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Presets.ps1')
@@ -29,19 +63,33 @@ $script:SettingsPath = Join-Path $script:ConfigDir 'settings.yaml'
 $script:ProfilesFile = Join-Path $script:ConfigDir 'agentport_profiles.json'
 $script:Models = @()
 $script:RepoFiles = @()
+$script:RepoHelpers = @()
 $script:LaunchState = 'idle'
+$script:HarnessOnlyLaunch = $false
 $script:LaunchDeadline = $null
 $script:PendingModel = ''
 $script:PendingContext = 49152
 $script:Download = $null
 $script:StatusBusy = $false
+$script:OperationHideAt = $null
 $script:BootstrapProcess = $null
 $script:BootstrapLog = ''
 $script:TextGenProcess = $null
 $script:HarnessProcess = $null
+$script:TextGenOwnership = $null
+$script:HarnessOwnership = $null
 $script:LaunchPhase = 0
 $script:InstallOnlyMode = $false
 $script:LastModelScanRoots = @()
+$script:ModelCatalogueCachePath = Join-Path (Join-Path $env:LOCALAPPDATA 'AgentPort') 'model-catalogue.json'
+$script:ModelScanOperation = $null
+$script:ModelScanCompletion = $null
+$script:ModelCatalogueScannedAt = ''
+$script:RuntimeProbeOperation = $null
+$script:RuntimeSnapshot = $null
+$script:StopOperation = [pscustomobject]@{Active=$false;Generation=0;Kind='';StartedAt=$null;Handle=$null}
+$script:ModelStopGeneration = 0
+$script:BackgroundOperationBudgetSeconds = 45
 $script:AppDataDir = Join-Path $env:LOCALAPPDATA 'AgentPort'
 $script:PublicDataDir = Join-Path $env:PUBLIC 'AgentPort'
 $script:PortableNodeVersion = '22.23.1'
@@ -64,9 +112,17 @@ $script:Defaults = [ordered]@{
     max_tokens = 2048
     active_model = ''
     active_context_tokens = 0
+    harness_base_url = ''
+    active_backend = 'local'
+    omniroute_api_key = ''
+    omniroute_model = ''
+    omniroute_context = 32768
     active_offload_mode = ''
     harness_runtime = 'auto'
     harness_last_update = ''
+    hidden_models = @()
+    ignored_models = @()
+    model_helpers = @()
 }
 
 $script:ContextPresets = [ordered]@{
@@ -109,6 +165,13 @@ function Save-Config {
 }
 
 $script:Config = Load-Config
+. (Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Port.ps1')
+$preferredPort=5100
+if($script:Config.backend_port){$preferredPort=[int]$script:Config.backend_port}
+$script:BackendPort=Select-AgentPortBackendPort $preferredPort
+$env:AGENTPORT_BACKEND_PORT=[string]$script:BackendPort
+$script:Config.backend_port=$script:BackendPort
+Save-Config
 # Migrate earlier specialist defaults to the recommended 48k local agent.
 # NInfer remains available from Models as an explicit advanced choice.
 if(($script:Config.last_model -eq 'qwen3.8-27b-minq4' -and [int]$script:Config.active_context_tokens -lt 49152) -or $script:Config.last_model -eq 'agentport-team-ridge27b'){
@@ -160,7 +223,7 @@ T7hqyehs7+d5JADtBTxps0fuCZjH7glPnYjwptWCE/L6twcxAPjOIsDr9payn1rAvPf1VPUuGd1+3Gz0
 Tml+29NKnkPokOeIBEAABEAABEAAJqNZbry2nZxLCgRAAF71PIBXkoJXMRVfSQoEQAAEQAAEQAAEQAAEQAAEQAAEQAAEQAAEQABeC4Di9Y+SAgEg5PWvJAUE
 rBMBShcAAWsbqINIgeKsQSlCIOCsQrVSQDGWwGHUADJm4EC6QPGVwAoA+TKwToFiE+BQZkJky8BGAcWVgQ0AcgmwrQHFJMAWAJkE2HWB4hFgB4A8AljzgGIR
 wALAhASWL/JRpUuAOxWr9AlwAVIlwfFDkJzA9UK12qQogOpynI2uAWbNFyZjZ6Fin9oIhx1VhanLSWPJD1DzJyKzsL/o0Ra99+j/729RglBTySMAAAAASUVO
-RK5CYII=                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              
+RK5CYII=
 '@
 $script:BrandLogoBase64 = @'
 iVBORw0KGgoAAAANSUhEUgAACAAAAAZkCAYAAABx/eUhAAAABmJLR0QA/wD/AP+gvaeTAAAgAElEQVR4nOzdeZTlZ13v+++za87UmSAhkBCGQAiQAGEeRCGC
@@ -1300,8 +1363,27 @@ function Ensure-AppIcon {
         }
     } catch {}
 }
+function Register-AgentPortTaskbarIdentity {
+    try {
+        $appId='ZURAVFX.AgentPort'
+        $key='HKCU:\Software\Classes\AppUserModelId\'+$appId
+        New-Item -Path $key -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'DisplayName' -Value 'AgentPort' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'IconUri' -Value $script:IconPath -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'RelaunchDisplayNameResource' -Value 'AgentPort' -PropertyType String -Force | Out-Null
+        New-ItemProperty -Path $key -Name 'RelaunchIconResource' -Value $script:IconPath -PropertyType String -Force | Out-Null
+        $self=Get-CimInstance Win32_Process -Filter ('ProcessId='+$PID) -ErrorAction Stop
+        $parent=Get-CimInstance Win32_Process -Filter ('ProcessId='+$self.ParentProcessId) -ErrorAction Stop
+        if($parent.ExecutablePath -and [IO.Path]::GetExtension([string]$parent.ExecutablePath) -eq '.exe'){
+            New-ItemProperty -Path $key -Name 'RelaunchCommand' -Value ('"'+[string]$parent.ExecutablePath+'"') -PropertyType String -Force | Out-Null
+        }
+        [void][AgentPortShellIdentity]::SetCurrentProcessExplicitAppUserModelID($appId)
+        [AgentPortShellIdentity]::SHChangeNotify(0x08000000,0x1000,[IntPtr]::Zero,[IntPtr]::Zero)
+    } catch {}
+}
 Write-Host 'AgentPort: preparing icon'
 Ensure-AppIcon
+Register-AgentPortTaskbarIdentity
 
 function Test-Port([int]$Port){
     $client = New-Object System.Net.Sockets.TcpClient
@@ -1385,11 +1467,34 @@ function Get-ModelSearchRoots {
 }
 
 function Find-RelatedMmproj([string]$ModelPath){
+    foreach($binding in @($script:Config.model_helpers)){
+        if([string]$binding.model -eq $ModelPath -and (Test-Path -LiteralPath ([string]$binding.helper))){
+            return @([string]$binding.helper)
+        }
+    }
     $dir=Split-Path $ModelPath -Parent
     if(-not(Test-Path -LiteralPath $dir)){ return @() }
     $helpers=@(Get-ChildItem -LiteralPath $dir -Filter 'mmproj*.gguf' -File -ErrorAction SilentlyContinue)
     if($helpers.Count -eq 0){ $helpers=@(Get-ChildItem -LiteralPath $dir -Filter '*mmproj*.gguf' -File -ErrorAction SilentlyContinue) }
-    return @($helpers | Select-Object -ExpandProperty FullName)
+    if($helpers.Count -eq 0){return @()}
+    $modelStem=[IO.Path]::GetFileNameWithoutExtension($ModelPath) -replace '(?i)[-_.](?:UD-)?(?:IQ\d|Q\d|BF16|F16|FP16|\d+(?:\.\d+)?bpw).*$',''
+    $modelKey=($modelStem -replace '[^A-Za-z0-9]','').ToLowerInvariant()
+    $matched=@($helpers | Where-Object {
+        $helperStem=([IO.Path]::GetFileNameWithoutExtension($_.Name) -replace '^(?i)mmproj[-_.]*','' -replace '(?i)[-_.](?:BF16|F16|FP16|Q\d).*$','')
+        $helperKey=($helperStem -replace '[^A-Za-z0-9]','').ToLowerInvariant()
+        $helperKey.Length -ge 5 -and ($modelKey.Contains($helperKey) -or $helperKey.Contains($modelKey))
+    })
+    if($matched.Count -gt 0){return @($matched | Select-Object -ExpandProperty FullName)}
+    $modelsInFolder=@(Get-ChildItem -LiteralPath $dir -Filter '*.gguf' -File -ErrorAction SilentlyContinue | Where-Object {$_.Name -notmatch '(?i)mmproj'})
+    if($helpers.Count -eq 1 -and $modelsInFolder.Count -eq 1){return @($helpers[0].FullName)}
+    return @()
+}
+
+function Set-ModelHelper([string]$ModelPath,[string]$HelperPath){
+    $bindings=@($script:Config.model_helpers | Where-Object {[string]$_.model -ne $ModelPath})
+    $bindings+=([pscustomobject]@{model=$ModelPath;helper=$HelperPath})
+    $script:Config.model_helpers=$bindings
+    Save-Config
 }
 
 function Get-InstalledModels {
@@ -1405,13 +1510,24 @@ function Get-InstalledModels {
     $teamStatus=if($teamReady){'Ready - verified at 48k'}else{'Download 12.8 GB + runtime'}
     $items=@([pscustomobject]@{Display="Qwen3-Coder 30B A3B | Recommended | $teamStatus";Name='Qwen3-Coder 30B A3B - Recommended';RelPath='agentport-fast-qwen3-coder';FullPath=$teamFile;Source='Team';RootPath=(Split-Path $teamFile);HelperFiles=@();SizeBytes=12848766112;SizeGB=11.97;Installed=$teamReady})+$items
     $seen = @{}
+    $ignored=@($script:Config.ignored_models | ForEach-Object {[string]$_})
     foreach($rootInfo in Get-ModelSearchRoots){
         $root=$rootInfo.Path
         if(-not(Test-Path -LiteralPath $root)){ continue }
         try{
-            Get-ChildItem -LiteralPath $root -Filter '*.gguf' -Recurse -File -ErrorAction SilentlyContinue | Where-Object { $_.Length -ge 100MB -and $_.Name -notmatch '^(?i:mmproj)' -and $_.Name -notmatch '(?i)mmproj.*\.gguf$' } | Select-Object -First 800 | ForEach-Object {
+            Get-ChildItem -LiteralPath $root -Filter '*.gguf' -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Name -notmatch '^(?i:mmproj)' -and $_.Name -notmatch '(?i)mmproj.*\.gguf$' } | Select-Object -First 800 | ForEach-Object {
+                # Hugging Face and Unsloth Desktop use zero-byte snapshot symlinks. Resolve the blob so they are not discarded.
+                $fileSize=[double]$_.Length
+                if($fileSize -le 0){
+                    $blobPath=''
+                    if($_.PSObject.Properties.Name -contains 'ResolvedTarget' -and $_.ResolvedTarget){$blobPath=[string]$_.ResolvedTarget}
+                    elseif($_.PSObject.Properties.Name -contains 'Target' -and $_.Target){try{$blobPath=[IO.Path]::GetFullPath((Join-Path $_.DirectoryName ([string]$_.Target)))}catch{}}
+                    if($blobPath){try{$fileSize=[double](Get-Item -LiteralPath $blobPath -Force -ErrorAction Stop).Length}catch{}}
+                }
+                if($fileSize -lt 100MB){ return }
                 $key=$_.FullName.ToLowerInvariant()
                 if($seen.ContainsKey($key)){ return }
+                if([string]$_.FullName -in $ignored){ return }
                 $seen[$key]=$true
                 try { $rel = $_.FullName.Substring($root.TrimEnd('\').Length).TrimStart('\').Replace('\','/') } catch { $rel=$_.Name }
                 $isMainRoot = ($root.TrimEnd('\').ToLowerInvariant() -eq ([string]$script:Config.models_root).TrimEnd('\').ToLowerInvariant())
@@ -1419,16 +1535,17 @@ function Get-InstalledModels {
                 $helpers=@(Find-RelatedMmproj $_.FullName)
                 $helperText = if($helpers.Count -gt 0){ ' | helper: '+([IO.Path]::GetFileName($helpers[0])) } else { '' }
                 $source=[string]$rootInfo.Source
+                if($_.FullName -match '(?i)\\models--unsloth--'){ $source='Unsloth Desktop' }
                 $items += [pscustomobject]@{
-                    Display = ('{0} | {1} | {2}{3}' -f $_.Name, (Format-Size $_.Length), $source, $helperText)
+                    Display = ('{0} | {1} | {2}{3}' -f $_.Name, (Format-Size $fileSize), $source, $helperText)
                     Name = $_.Name
                     RelPath = $modelId
                     FullPath = $_.FullName
                     Source = $source
                     RootPath = $root
                     HelperFiles = $helpers
-                    SizeBytes = [double]$_.Length
-                    SizeGB = [math]::Round(($_.Length/1GB),2)
+                    SizeBytes = $fileSize
+                    SizeGB = [math]::Round(($fileSize/1GB),2)
                 }
             }
         }catch{}
@@ -1438,13 +1555,13 @@ function Get-InstalledModels {
 
 function Invoke-TextGenApi([string]$Path,[string]$Method='GET',$Body=$null,[int]$TimeoutSec=2){
     $headers = @{ Authorization='Bearer local-textgen'; Accept='application/json' }
-    $params = @{ Uri=('http://127.0.0.1:5100'+$Path); Method=$Method; Headers=$headers; TimeoutSec=$TimeoutSec; ErrorAction='Stop' }
+    $params = @{ Uri=(("http://127.0.0.1:$script:BackendPort")+$Path); Method=$Method; Headers=$headers; TimeoutSec=$TimeoutSec; ErrorAction='Stop' }
     if($null -ne $Body){ $params['ContentType']='application/json'; $params['Body']=($Body | ConvertTo-Json -Depth 8) }
     return Invoke-RestMethod @params
 }
 
 function Get-LoadedModel {
-    if(-not (Test-Port 5100)){ return '' }
+    if(-not (Test-Port $script:BackendPort)){ return '' }
     try {
         $r = Invoke-TextGenApi '/v1/internal/model/info' 'GET' $null 1
         $n = [string]$r.model_name
@@ -1476,27 +1593,25 @@ function Get-ListeningProcessIds([int]$Port){
 }
 
 function Kill-Stack {
-    # Capture listeners while the managed process handles still prove ownership.
-    # This is more reliable than taskkill's process-tree traversal on locked-down
-    # Windows installations, where the Harness cmd wrapper can outlive node.
-    $backendPids=if($script:TextGenProcess){@(Get-ListeningProcessIds 5100)}else{@()}
-    $harnessPids=if($script:HarnessProcess){@(Get-ListeningProcessIds 3080)}else{@()}
-    if($IntegrationTest){Write-Host ('Stop ownership: backend handle='+$script:TextGenProcess.Id+' listeners='+($backendPids -join ',')+'; Harness handle='+$script:HarnessProcess.Id+' listeners='+($harnessPids -join ','))}
+    # Take one immutable ownership snapshot before terminating any wrapper.
+    # Windows taskkill tree traversal is not reliable when npx/cmd outlives
+    # node, so the captured descendants and listener PIDs are stopped from the
+    # explicit plans below. An unrelated listener remains untouched.
+    $backendPlan=Get-AgentPortStopPlan -Kind backend -Port $script:BackendPort -OwnedProcess $script:TextGenOwnership -HarnessRoot ([string]$script:Config.harness_root) -NpmCacheRoot ([string]$script:NpmCacheDir) -PortableNodeDir ([string]$script:PortableNodeDir) -TextGenRoot ([string]$script:Config.textgen_root) -ManagedRuntimeRoot (Join-Path $script:AppDataDir 'llama-b10809')
+    $harnessPlan=Get-AgentPortStopPlan -Kind harness -Port 3080 -OwnedProcess $script:HarnessOwnership -HarnessRoot ([string]$script:Config.harness_root) -NpmCacheRoot ([string]$script:NpmCacheDir) -PortableNodeDir ([string]$script:PortableNodeDir) -TextGenRoot ([string]$script:Config.textgen_root) -ManagedRuntimeRoot (Join-Path $script:AppDataDir 'llama-b10809')
+    if($IntegrationTest){Write-Host ('Stop ownership: backend targets='+(@($backendPlan.Processes|ForEach-Object{$_.Pid}) -join ',')+'; Harness targets='+(@($harnessPlan.Processes|ForEach-Object{$_.Pid}) -join ',')+'; unowned listeners='+(@($backendPlan.UnownedListenerPids)+@($harnessPlan.UnownedListenerPids) -join ','))}
     if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
-    Stop-AgentPortProcess $script:TextGenProcess
-    Stop-AgentPortProcess $script:HarnessProcess
-    foreach($managedPid in @($backendPids)+@($harnessPids)){
-        if($managedPid){try{[Diagnostics.Process]::GetProcessById([int]$managedPid).Kill()}catch{}}
-    }
-    Stop-VerifiedAgentPortProcess 5100 'backend'
-    Stop-VerifiedAgentPortProcess 3080 'harness'
+    if(Get-Command Stop-AgentPortOmniRoute -ErrorAction SilentlyContinue){Stop-AgentPortOmniRoute | Out-Null}
+    Stop-AgentPortStopPlan $backendPlan | Out-Null
+    Stop-AgentPortStopPlan $harnessPlan | Out-Null
     Stop-StaleNInferInstances
     $stopDeadline=(Get-Date).AddSeconds(8)
-    while(((Test-Port 5100) -or (Test-Port 3080)) -and (Get-Date) -lt $stopDeadline){
+    while(((Test-Port $script:BackendPort) -or (Test-Port 3080)) -and (Get-Date) -lt $stopDeadline){
         [Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 100
     }
     $script:TextGenProcess=$null;$script:HarnessProcess=$null
+    $script:TextGenOwnership=$null;$script:HarnessOwnership=$null
 }
 
 function Refresh-LiveResources {
@@ -1519,7 +1634,7 @@ function Refresh-LiveResources {
 }
 
 function Get-GpuPlacementSummary {
-    if($script:NInferState){ return 'Full GPU placement · NInfer CUDA' }
+    if($script:NInferState){ return 'Full GPU placement | NInfer CUDA' }
     $candidates=@((Join-Path $script:AppDataDir 'team-logs\llama.err.log'),(Join-Path ([string]$script:Config.textgen_root) 'logs\textgen.err.log'))
     foreach($path in $candidates){
         if(-not(Test-Path -LiteralPath $path)){continue}
@@ -1529,9 +1644,9 @@ function Get-GpuPlacementSummary {
             if($matches.Count -gt 0){
                 $m=$matches[$matches.Count-1]; $gpu=[int]$m.Groups[1].Value; $total=[int]$m.Groups[2].Value
                 $pct=if($total -gt 0){[math]::Round(100*$gpu/$total)}else{0}
-                return ("GPU placement · {0}/{1} layers ({2}%)" -f $gpu,$total,$pct)
+                return ("GPU placement | {0}/{1} layers ({2}%)" -f $gpu,$total,$pct)
             }
-            if($recent -match '(?im)offload(?:ed|ing) all .*layers'){return 'GPU placement · all model layers'}
+            if($recent -match '(?im)offload(?:ed|ing) all .*layers'){return 'GPU placement | all model layers'}
         }catch{}
     }
     return 'GPU-priority placement requested'
@@ -1539,79 +1654,188 @@ function Get-GpuPlacementSummary {
 
 function Set-OperationFeedback([string]$Title,[string]$Detail,[string]$State='busy'){
     if(-not $OperationBanner){return}
+    $OperationBanner.BeginAnimation([System.Windows.UIElement]::OpacityProperty,$null)
+    $OperationBanner.Opacity=1
     $OperationBanner.Visibility='Visible'; $OperationTitle.Text=$Title; $OperationDetail.Text=$Detail
     $OperationProgress.IsIndeterminate=($State -eq 'busy')
     $OperationProgress.Visibility=if($State -eq 'busy'){'Visible'}else{'Collapsed'}
     $OperationDot.Fill=if($State -eq 'ok'){'#51E57A'}elseif($State -eq 'error'){'#FF6B75'}else{'#A894FF'}
+    $script:OperationHideAt=if($State -eq 'busy'){$null}else{(Get-Date).AddSeconds($(if($State -eq 'error'){10}else{6}))}
     Pump-Ui
+}
+
+function Poll-OperationFeedback {
+    if(-not $OperationBanner -or -not $script:OperationHideAt -or (Get-Date) -lt $script:OperationHideAt){return}
+    $script:OperationHideAt=$null
+    $fade=New-Object System.Windows.Media.Animation.DoubleAnimation
+    $fade.From=1;$fade.To=0;$fade.Duration=[TimeSpan]::FromMilliseconds(350)
+    $fade.Add_Completed({$OperationBanner.Visibility='Collapsed';$OperationBanner.Opacity=1})
+    $OperationBanner.BeginAnimation([System.Windows.UIElement]::OpacityProperty,$fade)
 }
 
 function Set-StopControls([bool]$Enabled){
     foreach($button in @($StopBackendButton,$StopHarnessButton,$PurgeVramButton)){if($button){$button.IsEnabled=$Enabled}}
+    if($RuntimeOpenUiButton){$RuntimeOpenUiButton.IsEnabled=$Enabled}
+    if($PrimaryButton){$PrimaryButton.IsEnabled=$Enabled}
+}
+
+function Update-AgentPortLifecycleControls {
+    param([bool]$ModelOnline,[bool]$HarnessOnline)
+    $busy=$script:StopOperation.Active
+    $kind=$script:StopOperation.Kind
+    $unloading=$busy -and $kind -in @('backend','all')
+    $closing=$busy -and $kind -in @('harness','all')
+    $opening=$script:LaunchState -eq 'wait_harness'
+    $ModelControlStatus.Text=if($unloading){'Unloading model...'}elseif($ModelOnline){'Loaded. Unload to release its memory; Harness stays open.'}else{'Unloaded. Load a model above to answer prompts.'}
+    $HarnessControlStatus.Text=if($closing){'Closing Harness...'}elseif($opening){'Opening Harness...'}elseif($HarnessOnline -and -not $ModelOnline){'Open. Chats are kept; load a model to continue working.'}elseif($HarnessOnline){'Open. Closing Harness keeps your model loaded.'}else{'Closed. Open Harness without reloading the model.'}
+    $StopBackendButton.Content=if($unloading){'Unloading...'}else{'Unload model'}
+    $StopHarnessButton.Content=if($closing){'Closing...'}else{'Close Harness'}
+    $RuntimeOpenUiButton.Content=if($opening){'Opening...'}elseif($HarnessOnline){'Show Harness'}else{'Open Harness'}
+    # Unload remains available even if a crashed/starting runtime has no API.
+    $StopBackendButton.IsEnabled=-not $busy
+    $StopHarnessButton.IsEnabled=-not $busy
+    $PurgeVramButton.IsEnabled=-not $busy
+    $RuntimeOpenUiButton.IsEnabled=-not ($busy -or $script:LaunchState -ne 'idle' -or $script:TeamStarting)
+}
+
+function Open-HarnessFromHome {
+    if($script:StopOperation.Active -or $script:LaunchState -ne 'idle' -or $script:TeamStarting){return}
+    try {
+        if(Test-Port 3080){
+            $url=Get-HarnessStartupUrl
+            if(-not $url){$url='http://127.0.0.1:3080'}
+            if($script:OpenHarnessWhenReady){Start-Process $url}
+            return
+        }
+        $selected=Get-SelectedModel
+        $isCloud=([string]$script:Config.active_backend -eq 'omniroute')
+        if($isCloud){Start-AgentPortOmniRoute}
+        $fallbackModel=if($isCloud){[string]$script:Config.omniroute_model}else{[string]$script:Config.active_model}
+        if($isCloud -and [string]::IsNullOrWhiteSpace($fallbackModel)){throw 'Select a cloud model on Home before opening Harness.'}
+        if(-not $fallbackModel -and $selected){$fallbackModel=[string]$selected.RelPath}
+        if(-not $fallbackModel -and [string]$script:Config.last_model){$fallbackModel=[string]$script:Config.last_model}
+        if(-not $fallbackModel -and $script:HomeModels.Count -gt 0){$fallbackModel=[string]$script:HomeModels[0].RelPath}
+        if(-not $fallbackModel){throw 'Install or select a GGUF model first so Harness has a profile to start.'}
+
+        $fallbackContext=if($isCloud){[int]$script:Config.omniroute_context}else{[int]$script:Config.active_context_tokens}
+        if(-not $fallbackContext -or $script:ContextPresets.Values -notcontains $fallbackContext){
+            $label=[string]$script:Config.last_context
+            if($label -and @($script:ContextPresets.Keys) -contains $label){
+                $fallbackContext=[int]$script:ContextPresets[$label]
+            }else{
+                $fallbackContext=49152
+            }
+        }
+
+        $script:PendingModel=$fallbackModel
+        $script:PendingContext=$fallbackContext
+        $script:HarnessOnlyLaunch=$true
+        $script:LaunchState='wait_harness';$script:LaunchDeadline=(Get-Date).AddMinutes(2)
+        $PrimaryButton.IsEnabled=$false
+        Update-AgentPortLifecycleControls ([bool]($script:RuntimeSnapshot -and $script:RuntimeSnapshot.BackendOnline)) $false
+        Set-OperationFeedback 'Opening Harness' 'Starting the agent interface. Your model is not being stopped or reloaded.'
+        Start-Harness
+    } catch {
+        $script:LaunchState='idle';$script:HarnessOnlyLaunch=$false;$PrimaryButton.IsEnabled=$true
+        Set-OperationFeedback 'Harness could not open' $_.Exception.Message 'error'
+        Set-Log $_.Exception.Message 'error';Refresh-Runtime
+    }
 }
 
 function Kill-HarnessOnly {
-    Stop-AgentPortProcess $script:HarnessProcess
-    Stop-VerifiedAgentPortProcess 3080 'harness'
-    $script:HarnessProcess=$null
+    # Capture the wrapper, its descendants and the current listener before
+    # killing anything. This also finds a direct cached dsh lib/bin.js web
+    # process left behind by a prior wrapper, but never kills by port alone.
+    $plan=Get-AgentPortStopPlan -Kind harness -Port 3080 -OwnedProcess $script:HarnessOwnership -HarnessRoot ([string]$script:Config.harness_root) -NpmCacheRoot ([string]$script:NpmCacheDir) -PortableNodeDir ([string]$script:PortableNodeDir) -TextGenRoot ([string]$script:Config.textgen_root) -ManagedRuntimeRoot (Join-Path $script:AppDataDir 'llama-b10809')
+    $result=Stop-AgentPortStopPlan $plan
+    $script:HarnessProcess=$null;$script:HarnessOwnership=$null
+    return $result
 }
 
-function Stop-BackendOnly {
+function Start-AgentPortStopOperation {
+    param([Parameter(Mandatory)][ValidateSet('backend','harness','all')][string]$Kind)
+    if($script:StopOperation.Active){return $false}
+    $script:StopOperation.Active=$true;$script:StopOperation.Generation++;$script:StopOperation.Kind=$Kind;$script:StopOperation.StartedAt=Get-Date
+    if($Kind -in @('backend','all')){$script:ModelStopGeneration++}
+    # Cancel the startup poll before it can reopen the component being stopped.
+    $script:LaunchState='idle';$script:HarnessOnlyLaunch=$false
     Set-StopControls $false
-    Set-OperationFeedback 'Stopping backend...' 'Closing the model runtime and releasing its GPU allocation.'
-    try{
-        if($script:NInferState){Stop-NInferService $script:NInferState; $script:NInferState=$null}
-        Stop-AgentPortProcess $script:TextGenProcess
-        Stop-VerifiedAgentPortProcess 5100 'backend'
-        Stop-StaleNInferInstances
-        $script:TextGenProcess=$null; $script:LaunchState='idle'
-        Refresh-Runtime
-        if(Test-Port 5100){throw 'Port 5100 is still used by a backend that AgentPort does not own.'}
-        Set-OperationFeedback 'Backend stopped' 'GPU memory used by the model has been released. Harness remains open but cannot answer until a backend starts.' 'ok'
-        Set-Log 'Backend stopped. Harness remains open.' 'ok'
-    }catch{
-        Set-OperationFeedback 'Backend could not stop' $_.Exception.Message 'error'
-        Set-Log ('Could not stop backend: '+$_.Exception.Message) 'error'
-    }finally{Set-StopControls $true; Refresh-Runtime}
-}
-
-function Stop-HarnessFromHome {
-    Set-StopControls $false
-    Set-OperationFeedback 'Stopping Harness...' 'Closing the agent interface. The model backend will remain loaded.'
-    try{
-        Kill-HarnessOnly
-        Refresh-Runtime
-        if(Test-Port 3080){throw 'Port 3080 is still used by a Harness process that AgentPort does not own.'}
-        Set-OperationFeedback 'Harness stopped' 'The agent interface is closed. The backend remains loaded and ready.' 'ok'
-        Set-Log 'Harness stopped. The backend remains loaded.' 'ok'
-    }catch{
-        Set-OperationFeedback 'Harness could not stop' $_.Exception.Message 'error'
-        Set-Log ('Could not stop Harness: '+$_.Exception.Message) 'error'
-    }finally{Set-StopControls $true; Refresh-Runtime}
-}
-
-function Purge-AgentPortVram {
-    Set-StopControls $false
-    Set-OperationFeedback 'Stopping everything...' 'Closing the backend and Harness, then checking that AgentPort GPU memory is released.'
+    Update-AgentPortLifecycleControls ([bool]($script:RuntimeSnapshot -and $script:RuntimeSnapshot.BackendOnline)) ([bool]($script:RuntimeSnapshot -and $script:RuntimeSnapshot.HarnessOnline))
+    $script:RuntimeSnapshot=$null
+    $title=if($Kind -eq 'backend'){'Unloading model...'}elseif($Kind -eq 'harness'){'Closing Harness...'}else{'Stopping model and Harness...'}
+    $detail=if($Kind -eq 'backend'){'Releasing the model runtime. Harness and saved chats stay open. Any current reply will stop.'}elseif($Kind -eq 'harness'){'Closing the agent service. Your model stays loaded; saved chats are kept. A browser tab may remain visible.'}else{'Closing AgentPort runtimes. ComfyUI, Blender and other apps are left alone.'}
+    Set-OperationFeedback $title $detail
     try {
-        Kill-Stack
-        $script:LaunchState='idle'
-        $PrimaryButton.IsEnabled=$true
-        $PrimaryButton.Content='Start selected model'
-        Start-Sleep -Milliseconds 700
-        Refresh-Runtime
-        if((Test-Port 5100) -or (Test-Port 3080)){
-            Set-Log 'AgentPort stopped its own processes, but a port is still occupied by an external process. Close that application before retrying.' 'error'
-            Set-OperationFeedback 'Some services are still running' 'A process outside AgentPort still owns a required port. Check the activity log below.' 'error'
-            return
+        $common=@{HarnessRoot=[string]$script:Config.harness_root;NpmCacheRoot=[string]$script:NpmCacheDir;PortableNodeDir=[string]$script:PortableNodeDir;TextGenRoot=[string]$script:Config.textgen_root;ManagedRuntimeRoot=(Join-Path $script:AppDataDir 'llama-b10809')}
+        # Copy only existing data here. Process/cache discovery can be slow and
+        # must happen inside the worker, before any process is terminated.
+        $ninfer=$null
+        if($script:NInferState){$ninfer=$script:NInferState|Select-Object Distro,PidFile,Executable,LogDirectory,Launch,Port}
+        $snapshot=[ordered]@{Kind=$Kind;BackendPort=$script:BackendPort;Common=$common;BackendOwner=$script:TextGenOwnership;HarnessOwner=$script:HarnessOwnership;NInfer=$ninfer}
+        $payload=[pscustomobject]@{
+            SnapshotJson=($snapshot|ConvertTo-Json -Depth 12)
+            HelperPath=(Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Background.ps1')
+            StopModulePath=(Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.NInfer.ps1')
+            NInferModulePath=(Join-Path $PSScriptRoot 'ninfer-4080\NInfer.Runtime.ps1')
         }
-        Set-OperationFeedback 'AgentPort stopped' 'Backend and Harness are closed. AgentPort model VRAM has been released.' 'ok'
-        Set-Log 'AgentPort stack stopped and its GPU allocations were released. You can start NInfer again.' 'ok'
-    } catch {
-        Set-OperationFeedback 'Could not stop everything' $_.Exception.Message 'error'
-        Set-Log ('Could not purge AgentPort GPU allocations: '+$_.Exception.Message) 'error'
-    } finally { Set-StopControls $true; Refresh-Runtime }
+        $worker=@'
+param($payload)
+$ErrorActionPreference='Stop'
+. $payload.HelperPath
+. $payload.StopModulePath
+$snapshot=$payload.SnapshotJson|ConvertFrom-Json
+$common=@{}
+foreach($property in $snapshot.Common.PSObject.Properties){$common[$property.Name]=$property.Value}
+if($snapshot.Kind -in @('backend','all') -and $snapshot.NInfer){
+    . $payload.NInferModulePath
+    Stop-NInferService $snapshot.NInfer
 }
+$plans=@()
+if($snapshot.Kind -in @('backend','all')){$plans+=@(Get-AgentPortStopPlan -Kind backend -Port $snapshot.BackendPort -OwnedProcess $snapshot.BackendOwner @common)}
+if($snapshot.Kind -in @('harness','all')){$plans+=@(Get-AgentPortStopPlan -Kind harness -Port 3080 -OwnedProcess $snapshot.HarnessOwner @common)}
+Invoke-AgentPortStopPlansCore $plans
+'@
+        $script:StopOperation.Handle=New-AgentPortBackgroundOperation -Name ('stop-'+$Kind) -ScriptText $worker -Payload $payload -TimeoutSeconds 25
+        return $true
+    } catch {
+        $script:StopOperation.Active=$false;$script:StopOperation.Kind='';Set-StopControls $true
+        Set-OperationFeedback 'Could not start stop operation' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error';return $false
+    }
+}
+
+function Complete-AgentPortStopOperationIfReady {
+    if(-not $script:StopOperation.Active -or -not $script:StopOperation.Handle){return}
+    $operation=$script:StopOperation.Handle
+    if(Test-AgentPortBackgroundOperationTimedOut $operation){
+        Stop-AgentPortBackgroundOperation $operation;$script:StopOperation.Handle=$null;$script:StopOperation.Active=$false
+        $script:StopOperation.Kind='';$script:StopOperation.Generation++
+        Set-StopControls $true;Set-OperationFeedback 'Stop timed out' 'Check Resources and activity, then retry. Processes that could not be verified were left alone.' 'error';Set-Log 'Stop operation timed out; no unverified process was terminated.' 'error';Refresh-Runtime;return
+    }
+    if(-not (Test-AgentPortBackgroundOperationCompleted $operation)){return}
+    $kind=$script:StopOperation.Kind;$script:StopOperation.Handle=$null
+    try {
+        $result=@(Complete-AgentPortBackgroundOperation $operation)|Where-Object{$_ -and $_.PSObject.Properties.Name -contains 'StoppedPids'}|Select-Object -Last 1
+        if(-not $result){throw 'No shutdown result was returned. Retry, or check Resources and activity for details.'}
+        $incomplete=@($result.UnownedListenerPids)+@($result.RemainingListenerPids)+@($result.SkippedPids)+@($result.FailedPids)+@($result.RemainingOwnedPids) | Where-Object {$_}
+        if($incomplete){
+            $details='Still running or could not verify PID(s): '+(($incomplete | Sort-Object -Unique) -join ', ')+'. Check Resources and activity, then retry. Unrelated apps were left alone.'
+            if($result.FailureDetails){$details+=' '+(@($result.FailureDetails | ForEach-Object {$_.Message}) -join '; ')}
+            throw $details
+        }
+        if($kind -in @('backend','all')){$script:TextGenProcess=$null;$script:TextGenOwnership=$null;$script:LaunchState='idle';$script:NInferState=$null}
+        if($kind -in @('harness','all')){$script:HarnessProcess=$null;$script:HarnessOwnership=$null}
+        $script:StopOperation.Active=$false;$script:StopOperation.Kind='';$script:PrimaryButton.IsEnabled=$true
+        $LaunchProgressCard.Visibility='Collapsed'
+        if($kind -eq 'backend'){Set-OperationFeedback 'Model unloaded' 'Harness was left alone. Load a model above when you are ready; model files remain on disk.' 'ok';Set-Log 'Model unloaded. Harness was not stopped.' 'ok'}
+        elseif($kind -eq 'harness'){Set-OperationFeedback 'Harness closed' 'Your model was left loaded. Use Open Harness to return. Saved chats are kept; an existing browser tab may stay visible.' 'ok';Set-Log 'Harness closed. Model was not stopped.' 'ok'}
+        else {Set-OperationFeedback 'Model and Harness stopped' 'AgentPort runtimes have closed. Memory used by other apps remains in the live totals.' 'ok';Set-Log 'Model and Harness stopped. Other apps were left alone.' 'ok'}
+    } catch {Set-OperationFeedback 'Stop failed' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error';$script:StopOperation.Active=$false;$script:StopOperation.Kind='';$PrimaryButton.IsEnabled=$true}
+    finally {$script:StopOperation.Generation++;$script:RuntimeSnapshot=$null;Set-StopControls $true;Refresh-Runtime}
+}
+
+function Stop-BackendOnly {[void](Start-AgentPortStopOperation 'backend')}
+function Stop-HarnessFromHome {[void](Start-AgentPortStopOperation 'harness')}
+function Purge-AgentPortVram {[void](Start-AgentPortStopOperation 'all')}
 
 function Prepare-IsolatedHarnessSkills {
     $source = [string]$script:Config.harness_skills_root
@@ -1666,6 +1890,17 @@ function Pump-Ui {
     try {
         $Window.Dispatcher.Invoke([System.Windows.Threading.DispatcherPriority]::Render, [action]{})
     } catch {}
+}
+
+function Wait-AgentPortProcessResponsive {
+    param([Parameter(Mandatory)]$Process,[Parameter(Mandatory)][int]$TimeoutSeconds)
+    $deadline=(Get-Date).AddSeconds([math]::Max(1,$TimeoutSeconds))
+    while(-not $Process.HasExited -and (Get-Date) -lt $deadline){
+        Pump-Ui
+        Start-Sleep -Milliseconds 50
+        try{$Process.Refresh()}catch{}
+    }
+    return [bool]$Process.HasExited
 }
 
 function Set-LaunchPhase([int]$Step,[string]$Title,[string]$Detail,[double]$Percent,[string]$State='active'){
@@ -1843,6 +2078,26 @@ function Get-HarnessInstallState {
     return [pscustomobject]@{State='Missing'; Detail='Click Install DeepSeek Harness to prepare it'; Kind='missing'}
 }
 
+function Get-ManagedRuntimeState {
+    $runtime=Get-AgentPortTeamRuntime
+    if($runtime){return [pscustomobject]@{State='Installed';Detail=$runtime;Kind='ok'}}
+    return [pscustomobject]@{State='Missing';Detail='Installed automatically with the recommended model';Kind='missing'}
+}
+function Get-RecommendedModelState {
+    $path=Join-Path $script:AppDataDir 'models\Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf'
+    if(Test-Path $path){return [pscustomobject]@{State='Installed';Detail=$path;Kind='ok'}}
+    return [pscustomobject]@{State='Not downloaded';Detail='Download from Models when wanted';Kind='missing'}
+}
+function Get-NInferInstallState {
+    if(Test-AgentPortNInferInstalled){return [pscustomobject]@{State='Installed';Detail='Ubuntu-24.04 | converted 27B model and sm_89 backend';Kind='ok'}}
+    return [pscustomobject]@{State='Not installed';Detail='Optional RTX 4080 specialist backend';Kind='missing'}
+}
+function Get-McpInstallState {
+    $path=Join-Path $script:ConfigDir 'agentport-mcp.json'
+    if(Test-Path $path){return [pscustomobject]@{State='Configured';Detail=$path;Kind='ok'}}
+    return [pscustomobject]@{State='Not configured';Detail='Add connections from Skills & MCPs';Kind='missing'}
+}
+
 function Set-InstallFlag($TextBlock,$Dot,[pscustomobject]$Info){
     if($null -eq $TextBlock){ return }
     $TextBlock.Text=$Info.State
@@ -1859,8 +2114,17 @@ function Refresh-InstallStatus {
         $hs=Get-HarnessInstallState
         Set-InstallFlag $TextGenInstallFlag $TextGenInstallDot $tg
         Set-InstallFlag $HarnessInstallFlag $HarnessInstallDot $hs
+        $managed=Get-ManagedRuntimeState;$recommended=Get-RecommendedModelState;$ninfer=Get-NInferInstallState;$mcp=Get-McpInstallState
+        Set-InstallFlag $ManagedRuntimeFlag $ManagedRuntimeDot $managed
+        Set-InstallFlag $RecommendedModelFlag $RecommendedModelDot $recommended
+        Set-InstallFlag $NInferInstallFlag $NInferInstallDot $ninfer
+        Set-InstallFlag $McpInstallFlag $McpInstallDot $mcp
         if($TextGenInstallDetail){ $TextGenInstallDetail.Text=$tg.Detail }
         if($HarnessInstallDetail){ $HarnessInstallDetail.Text=$hs.Detail }
+        if($ManagedRuntimeDetail){$ManagedRuntimeDetail.Text=$managed.Detail}
+        if($RecommendedModelDetail){$RecommendedModelDetail.Text=$recommended.Detail}
+        if($NInferInstallDetail){$NInferInstallDetail.Text=$ninfer.Detail}
+        if($McpInstallDetail){$McpInstallDetail.Text=$mcp.Detail}
     }catch{}
 }
 
@@ -1878,6 +2142,7 @@ function Start-TextGenInstallOnly([bool]$Repair=$false){
 }
 
 function Install-DeepSeekHarness([bool]$Repair=$false){
+    if($script:StopOperation.Active){Set-Log 'Wait for the current stop operation to finish before installing Harness.' 'error';return}
     try{
         Set-LaunchPhase 1 'Preparing DeepSeek Harness' 'Installing portable Node and warming the DeepSeek Harness package cache.' 15
         Ensure-AgentPortRuntimeDirs
@@ -1892,8 +2157,7 @@ function Install-DeepSeekHarness([bool]$Repair=$false){
         Set-LaunchPhase 1 'Installing DeepSeek Harness' 'Downloading/caching Harness through portable npx.' 35
         $cmd='set "npm_config_cache={0}"&& "{1}" --yes @deepseek-ai/dsh@latest --help > "{2}" 2> "{3}"' -f $script:NpmCacheDir,$npx,$out,$err
         $p=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
-        $p.WaitForExit(120000)
-        if(-not $p.HasExited){ try{$p.Kill()}catch{}; throw 'DeepSeek Harness install timed out while preparing npx cache.' }
+        if(-not (Wait-AgentPortProcessResponsive $p 120)){ try{$p.Kill()}catch{}; throw 'DeepSeek Harness install timed out while preparing npx cache.' }
         if($p.ExitCode -ne 0){
             $detail=Get-RecentLogText $err 12
             if(-not $detail){$detail=Get-RecentLogText $out 12}
@@ -1911,11 +2175,56 @@ function Install-DeepSeekHarness([bool]$Repair=$false){
 }
 
 function Scan-Models {
-    Refresh-Models
-    $rootCount=@($script:LastModelScanRoots).Count
-    $modelCount=@($script:Models).Count
-    Set-Log ("Model scan complete. Found $modelCount GGUF model(s) across $rootCount known local AI location(s).") 'ok'
-    if($modelCount -eq 0){ [System.Windows.MessageBox]::Show('No GGUF models were found. Try Hugging Face download, Import GGUF, or change the Models path in Settings.','Scan models')|Out-Null }
+    param([scriptblock]$OnCompleted)
+    if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$false;$RefreshModelsButton.Content='Scanning...'}
+    if($ModelScanStatus){$ModelScanStatus.Text='Searching AgentPort, LM Studio, Hugging Face and other known model locations in the background...';$ModelScanStatus.Foreground='#B9ADE8'}
+    try {
+        if(-not (Start-ModelScanAsync $OnCompleted)){return}
+    } catch {
+        if($ModelScanStatus){$ModelScanStatus.Text='Scan could not start: '+$_.Exception.Message;$ModelScanStatus.Foreground='#FF9D9D'}
+        if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$true;$RefreshModelsButton.Content='Scan for models'}
+        Set-Log ('Model scan could not start: '+$_.Exception.Message) 'error'
+    }
+}
+
+function Complete-ModelScanIfReady {
+    if(-not $script:ModelScanOperation){return $false}
+    if(Test-AgentPortBackgroundOperationTimedOut $script:ModelScanOperation){
+        $operation=$script:ModelScanOperation;$script:ModelScanOperation=$null
+        Stop-AgentPortBackgroundOperation $operation
+        if($ModelScanStatus){$ModelScanStatus.Text='Scan timed out; showing the last cached catalogue.';$ModelScanStatus.Foreground='#FFCF79'}
+        if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$true;$RefreshModelsButton.Content='Scan for models'}
+        if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$true;$RefreshModelsButton.Content='Scan for models'}
+        if($script:ModelScanCompletion){$callback=$script:ModelScanCompletion;$script:ModelScanCompletion=$null;& $callback}
+        return $true
+    }
+    if(-not (Test-AgentPortBackgroundOperationCompleted $script:ModelScanOperation)){return $false}
+    $operation=$script:ModelScanOperation;$script:ModelScanOperation=$null
+    try {
+        $output=@(Complete-AgentPortBackgroundOperation $operation)
+        $result=$output|Where-Object{$_ -and $_.PSObject.Properties.Name -contains 'Models'}|Select-Object -Last 1
+        if(-not $result){throw 'Model scan returned no catalogue.'}
+        $preferred=if(Get-SelectedModel){[string](Get-SelectedModel).RelPath}else{[string]$script:Config.last_model}
+        $script:Models=@($result.Models)
+        $script:LastModelScanRoots=@($result.Roots)
+        $script:ModelCatalogueScannedAt=[string]$result.ScannedAt
+        $script:Models=@($script:Models)+@(Get-BuiltinModelCatalogueItems)|Sort-Object @{Expression={if($_.Source -eq 'Team'){0}elseif($_.Source -eq 'NInfer'){2}else{1}}},Name
+        Save-ModelCatalogueCache
+        Refresh-Models $preferred
+        $rootCount=@($script:LastModelScanRoots).Count
+        $modelCount=@($script:Models|Where-Object{$_.Source -notin @('NInfer','Team')}).Count
+        if($ModelScanStatus){$ModelScanStatus.Text=("Found $modelCount local GGUF model(s) in $rootCount known locations. Last scan: $([datetime]::Parse($script:ModelCatalogueScannedAt).ToLocalTime().ToString('HH:mm:ss')).");$ModelScanStatus.Foreground='#8AF5B5'}
+        Set-Log ("Model scan complete. Found $modelCount local GGUF model(s) across $rootCount known AI location(s).") 'ok'
+        if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$true;$RefreshModelsButton.Content='Scan for models'}
+        if($script:ModelScanCompletion){$callback=$script:ModelScanCompletion;$script:ModelScanCompletion=$null;& $callback}
+    } catch {
+        if($ModelScanStatus){$ModelScanStatus.Text='Scan failed; showing the last cached catalogue: '+$_.Exception.Message;$ModelScanStatus.Foreground='#FF9D9D'}
+        Set-Log ('Model scan failed; cached catalogue retained: '+$_.Exception.Message) 'error'
+        if($script:ModelScanCompletion){$callback=$script:ModelScanCompletion;$script:ModelScanCompletion=$null;& $callback}
+    } finally {
+        if($RefreshModelsButton){$RefreshModelsButton.IsEnabled=$true;$RefreshModelsButton.Content='Scan for models'}
+    }
+    return $true
 }
 
 function Add-SkillFolder {
@@ -1983,7 +2292,7 @@ function Write-TextGenFlags([string]$Model,[int]$Context,[string]$Cache,[string]
     }
     $lines = @(
         '--api',
-        '--api-port 5100',
+        ("--api-port "+$script:BackendPort),
         '--api-key local-textgen',
         ('--model-dir "{0}"' -f $modelDir),
         ('--model "{0}"' -f $modelName),
@@ -2011,83 +2320,25 @@ function Write-TextGenFlags([string]$Model,[int]$Context,[string]$Cache,[string]
     [IO.File]::WriteAllLines($flagsFile,$lines,[Text.Encoding]::ASCII)
 }
 
-function Update-HarnessSettings([string]$Model,[string]$DisplayName,[int]$Context,[int]$MaxTokens){
-    Ensure-ConfigDir
-    $safeModel=$Model.Replace("'","''")
-    $safeName=$DisplayName.Replace("'","''")
-    if(-not (Test-Path -LiteralPath $script:SettingsPath)){
-        $fresh=@"
-llm-pi-ai:
-  providers:
-    agentport-local:
-      displayName: AgentPort Local
-      apiKeyEnv: TEXTGEN_API_KEY
-      api: openai-completions
-      baseURL: http://127.0.0.1:5100/v1
-      defaultInput:
-        - text
-      timeoutMs: 3600000
-      streamIdleTimeoutMs: 3600000
-      websocketConnectTimeoutMs: 3600000
-      retryPolicy:
-        mode: normal
-        maxRetries: 0
-      models:
-        - id: '$safeModel'
-          name: '$safeName'
-          contextWindow: $Context
-          maxTokens: $MaxTokens
-agent-default-model:
-  provider: agentport-local
-  model: '$safeModel'
-"@
-        [IO.File]::WriteAllText($script:SettingsPath,$fresh,([System.Text.UTF8Encoding]::new($false)))
-        return
+function Repair-HarnessSettingsFile {
+    $path=[string]$script:SettingsPath
+    if([string]::IsNullOrWhiteSpace($path) -or -not(Test-Path -LiteralPath $path)){return $false}
+    try {
+        $backup=$path+'.before-agentport-settings-repair'
+        $changed=Invoke-AgentPortYamlSettingsMutation -Path $path -Operations @([pscustomobject]@{kind='repair'}) -BackupPath $backup -ErrorAction Stop
+        if($changed -and $null -ne $LogBox){Set-Log 'Repaired duplicate Harness settings maps. The original settings file was backed up.' 'ok'}
+        return [bool]$changed
+    } catch {
+        if($null -ne $LogBox){Set-Log ('Could not repair Harness settings: '+$_.Exception.Message) 'error'}
+        throw 'Harness settings could not be repaired safely.'
     }
-    $content = Get-Content -LiteralPath $script:SettingsPath -Raw
-    if($content -notmatch '(?m)^\s{4}agentport-local:\s*$'){
-        $provider=@"
-    agentport-local:
-      displayName: AgentPort Local
-      apiKeyEnv: TEXTGEN_API_KEY
-      api: openai-completions
-      baseURL: http://127.0.0.1:5100/v1
-      defaultInput:
-        - text
-      timeoutMs: 3600000
-      streamIdleTimeoutMs: 3600000
-      websocketConnectTimeoutMs: 3600000
-      retryPolicy:
-        mode: normal
-        maxRetries: 0
-      models:
-        - id: '$safeModel'
-          name: '$safeName'
-          contextWindow: $Context
-          maxTokens: $MaxTokens
-"@
-        if($content -match '(?m)^\s{2}providers:\s*$'){
-            $content=[regex]::Replace($content,'(?m)^(\s{2}providers:\s*\r?\n)',('${1}'+$provider+"`n"),1)
-        } else {
-            $content="llm-pi-ai:`n  providers:`n$provider`n"+$content
-        }
-    } else {
-        $escaped = [regex]::Escape($Model)
-        if($content.Contains($Model)){
-            $content = [regex]::Replace($content, "(- id:\s*['`"]?$escaped['`"]?\s+name:\s*[^\r\n]+\s+contextWindow:\s*)\d+", ('${1}'+$Context))
-            $content = [regex]::Replace($content, "(- id:\s*['`"]?$escaped['`"]?[\s\S]*?contextWindow:\s*$Context[\s\S]*?maxTokens:\s*)\d+", ('${1}'+$MaxTokens))
-        } else {
-            $block = "        - id: '$safeModel'`n          name: '$safeName'`n          contextWindow: $Context`n          maxTokens: $MaxTokens`n"
-            $content = [regex]::Replace($content, '(agentport-local:\s*[\r\n]+(?:[ \t]+[^\r\n]*[\r\n]+)*?[ \t]+models:\s*[\r\n]+)', ('${1}'+$block),1)
-        }
-    }
-    if($content -match '(?m)^agent-default-model:\s*$'){
-        $content = [regex]::Replace($content, '(agent-default-model:\s*[\r\n]+\s*provider:\s*)[^\r\n]+([\r\n]+\s*model:\s*)[^\r\n]+', ('${1}agentport-local${2}'+("'$safeModel'")))
-    } else {
-        $content += "`nagent-default-model:`n  provider: agentport-local`n  model: '$safeModel'`n"
-    }
-    [IO.File]::WriteAllText($script:SettingsPath,$content,([System.Text.UTF8Encoding]::new($false)))
 }
+
+function Update-HarnessSettings([string]$Model,[string]$DisplayName,[int]$Context,[int]$MaxTokens,[bool]$Vision=$false){
+    Ensure-ConfigDir
+    [void](Set-AgentPortHarnessSettings -Path $script:SettingsPath -Model $Model -DisplayName $DisplayName -Context $Context -MaxTokens $MaxTokens -Vision $Vision)
+}
+
 
 # --- AgentPort RTX 4080/NInfer backend ---------------------------------------
 
@@ -2126,11 +2377,42 @@ function Start-TextGen {
     $envDir=Join-Path $root 'installer_files\env'
     $cmd='set "PYTHONNOUSERSITE=1"&& set "PYTHONPATH="&& set "PYTHONHOME="&& set "PYTHONUTF8=1"&& set "CUDA_PATH={0}"&& set "CUDA_HOME={0}"&& call "{1}" activate "{0}" && "{2}" server.py > "{3}" 2> "{4}"' -f $envDir,$conda,$python,$out,$err
     $script:TextGenProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
+    $script:TextGenOwnership=Get-AgentPortProcessRecord ([int]$script:TextGenProcess.Id) $script:TextGenProcess
     Set-Log ('TextGen process started (PID '+$script:TextGenProcess.Id+'). Waiting for API :5100...')
 }
 
 function Start-Harness {
+    if($script:StopOperation.Active){return}
+    $startGeneration=$script:StopOperation.Generation
+    # Reloading an unloaded model must not spawn a second Harness or close chats.
+    if(Test-Port 3080){
+        if(-not $script:HarnessOwnership){throw 'An older or unverified Harness is still running. Use Close Harness, then Open Harness to reconnect it.'}
+        return
+    }
+    $processEnv=[Environment]::GetEnvironmentVariables([EnvironmentVariableTarget]::Process)
+    $hadHarnessBaseUrl=$processEnv.Contains('DEEPSEEK_BASE_URL')
+    $originalHarnessBaseUrl=if($hadHarnessBaseUrl){[string]$processEnv['DEEPSEEK_BASE_URL']}else{$null}
+    $hadOmniRouteKey=$processEnv.Contains('OMNIROUTE_API_KEY')
+    $originalOmniRouteKey=if($hadOmniRouteKey){[string]$processEnv['OMNIROUTE_API_KEY']}else{$null}
+    try {
+        if([string]$script:Config.active_backend -eq 'omniroute'){
+            $cloudKey=Get-AgentPortOmniRouteKey
+            if([string]::IsNullOrWhiteSpace($cloudKey)){throw 'Paste the OmniRoute endpoint key on Home before opening Harness.'}
+            $env:OMNIROUTE_API_KEY=$cloudKey
+        }
+        $configuredHarnessBaseUrl=[string]$script:Config.harness_base_url
+        if(-not [string]::IsNullOrWhiteSpace($configuredHarnessBaseUrl)){
+            foreach($ch in $configuredHarnessBaseUrl.ToCharArray()){
+                if([char]::IsControl($ch)){throw 'Harness base URL must not contain control characters.'}
+            }
+            try {$baseUri=[Uri]::new($configuredHarnessBaseUrl,[UriKind]::Absolute)} catch {throw 'Harness base URL must be an absolute HTTP(S) URL.'}
+            if(-not $baseUri.IsAbsoluteUri -or $baseUri.Scheme -notin @('http','https') -or -not $baseUri.Host -or $baseUri.UserInfo){throw 'Harness base URL must be an absolute HTTP(S) URL without userinfo.'}
+            $env:DEEPSEEK_BASE_URL=$configuredHarnessBaseUrl
+        }
     Ensure-AgentPortRuntimeDirs
+    Repair-HarnessSettingsFile | Out-Null
+    Repair-AgentPortPresetCompatibility
+    Ensure-AgentPortSkillIsolation
     $root=[string]$script:Config.harness_root
     if(-not (Test-Path -LiteralPath $root)){ New-Item -ItemType Directory -Force -Path $root | Out-Null }
     Prepare-IsolatedHarnessSkills
@@ -2151,6 +2433,10 @@ function Start-Harness {
         $cmd = 'set "TEXTGEN_API_KEY=local-textgen"&& set "NINFER_API_KEY=local-textgen"&& set "UNSLOTH_STUDIO_API_KEY=local-textgen"&& set "FREETOKEN_API_KEY=local-textgen"&& set "DSH_STUDIO_MODEL={0}"&& set "DSH_STUDIO_CONTEXT={1}"&& set "npm_config_cache={2}"&& "{3}" --yes @deepseek-ai/dsh@latest web --no-open > "{4}" 2> "{5}"' -f $script:PendingModel,$script:PendingContext,$script:NpmCacheDir,$npx,$out,$err
     }
     $mcpPatch=Join-Path $script:AppDataDir 'agentport-mcp.patch.json'
+    # Reopening Harness after relaunching AgentPort also restores the active
+    # mode's overlay; script variables alone do not survive an app restart.
+    if($script:PendingModel -eq 'agentport-fast-qwen3-coder' -and -not $script:TeamHarnessPatch){$script:TeamHarnessPatch=New-NInferHarnessPatch (Join-Path $logs 'team-harness.patch.yml')}
+    if($script:PendingModel -eq 'qwen3.8-27b-minq4' -and -not $script:NInferHarnessPatch){$script:NInferHarnessPatch=New-NInferHarnessPatch (Join-Path $logs 'ninfer-harness.patch.yml')}
     if($script:PendingModel -eq 'qwen3.8-27b-minq4'){
         Write-AgentPortMcpOverlay $mcpPatch -NInfer | Out-Null
     } else {Write-AgentPortMcpOverlay $mcpPatch | Out-Null}
@@ -2176,15 +2462,63 @@ function Start-Harness {
         $args+='--no-open'
         $root=[string]$script:Config.team_workspace
         New-Item -ItemType Directory -Force -Path $root | Out-Null
+        if($script:StopOperation.Active -or $script:StopOperation.Generation -ne $startGeneration){return}
         $script:HarnessProcess=Start-Process -FilePath $node -ArgumentList $args -WorkingDirectory $root -WindowStyle Hidden -PassThru -RedirectStandardOutput $out -RedirectStandardError $err
+        $script:HarnessOwnership=Get-AgentPortProcessRecord ([int]$script:HarnessProcess.Id) $script:HarnessProcess
         return
     }
     $cmd=$cmd.Replace('dsh web --no-open',('dsh web '+$patchArgs+' --no-open'))
     $cmd=$cmd.Replace('@deepseek-ai/dsh@latest web --no-open',('@deepseek-ai/dsh@latest web '+$patchArgs+' --no-open'))
+    if($script:StopOperation.Active -or $script:StopOperation.Generation -ne $startGeneration){return}
     $script:HarnessProcess=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory $root -WindowStyle Hidden -PassThru
+    $script:HarnessOwnership=Get-AgentPortProcessRecord ([int]$script:HarnessProcess.Id) $script:HarnessProcess
+    } finally {
+        if($hadHarnessBaseUrl){$env:DEEPSEEK_BASE_URL=$originalHarnessBaseUrl}else{Remove-Item Env:DEEPSEEK_BASE_URL -ErrorAction SilentlyContinue}
+        if($hadOmniRouteKey){$env:OMNIROUTE_API_KEY=$originalOmniRouteKey}else{Remove-Item Env:OMNIROUTE_API_KEY -ErrorAction SilentlyContinue}
+    }
+}
+
+function Refresh-AgentPortOmniRouteUi {
+    if(-not $OmniRouteStatus){return}
+    if(Test-Port $script:OmniRoutePort){$OmniRouteStatus.Text='Gateway running. Connect a provider, paste its endpoint key, then refresh models.';$OmniRouteStatus.Foreground='#8AF5B5'}
+    elseif(Test-AgentPortOmniRouteInstalled){$OmniRouteStatus.Text='Installed and stopped. Click Start / setup to open provider setup.';$OmniRouteStatus.Foreground='#BDBDC5'}
+    else{$OmniRouteStatus.Text='Optional cloud gateway. Free access depends on provider limits and availability.';$OmniRouteStatus.Foreground='#BDBDC5'}
+}
+
+function Setup-AgentPortOmniRouteFromHome {
+    try{
+        $OmniRouteSetupButton.IsEnabled=$false;Install-AgentPortOmniRoute;Start-AgentPortOmniRoute;Refresh-AgentPortOmniRouteUi;Open-AgentPortOmniRouteDashboard
+        Set-OperationFeedback 'Cloud setup opened' 'Connect a free provider and create an endpoint key in OmniRoute. Paste it here, then click Refresh models.' 'ok'
+    }catch{Set-OperationFeedback 'Cloud setup needs attention' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error'}finally{$OmniRouteSetupButton.IsEnabled=$true}
+}
+
+function Refresh-AgentPortOmniRouteModelsUi {
+    try{
+        $OmniRouteRefreshButton.IsEnabled=$false;Start-AgentPortOmniRoute
+        $key=$OmniRouteKeyBox.Password;if([string]::IsNullOrWhiteSpace($key)){$key=Get-AgentPortOmniRouteKey}else{Save-AgentPortOmniRouteKey $key}
+        if([string]::IsNullOrWhiteSpace($key)){throw 'Create an endpoint key in OmniRoute and paste it here first.'}
+        $models=@(Get-AgentPortOmniRouteModels $key);$OmniRouteModelCombo.Items.Clear()
+        foreach($model in $models){$item=New-Object System.Windows.Controls.ComboBoxItem;$item.Content=($model.Name+'  ['+$model.Id+']'+$(if($model.IsFree){'  Free metadata'}else{''}));$item.Tag=$model;[void]$OmniRouteModelCombo.Items.Add($item);if([string]$model.Id -eq [string]$script:Config.omniroute_model){$OmniRouteModelCombo.SelectedItem=$item}}
+        if($models.Count -eq 0){throw 'No models are available yet. Connect a provider in OmniRoute, then refresh.'}
+        Set-OperationFeedback 'Cloud models refreshed' ($models.Count.ToString()+' exact routes found. Select one explicitly; AgentPort will not choose a paid fallback.') 'ok'
+    }catch{Set-OperationFeedback 'Could not load cloud models' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error'}finally{$OmniRouteRefreshButton.IsEnabled=$true;Refresh-AgentPortOmniRouteUi}
+}
+
+function Start-AgentPortOmniRouteFromHome {
+    try{
+        $selected=$OmniRouteModelCombo.SelectedItem;if(-not $selected -or -not $selected.Tag){throw 'Refresh cloud models and select the exact route you want to use.'}
+        $model=$selected.Tag;$key=$OmniRouteKeyBox.Password;if([string]::IsNullOrWhiteSpace($key)){$key=Get-AgentPortOmniRouteKey}else{Save-AgentPortOmniRouteKey $key};if([string]::IsNullOrWhiteSpace($key)){throw 'Paste the OmniRoute endpoint key first.'}
+        Start-AgentPortOmniRoute
+        $context=[int][math]::Min([int64]$model.Context,131072)
+        [void](Set-AgentPortOmniRouteSettings -Path $script:SettingsPath -Model $model.Id -DisplayName $model.Name -Context $context -MaxTokens 4096 -Port $script:OmniRoutePort)
+        if(Test-Port 3080){if(-not $script:HarnessOwnership){throw 'An unverified Harness is already running. Close it before switching cloud models.'};[void](Kill-HarnessOnly)}
+        $script:PendingModel=[string]$model.Id;$script:PendingContext=$context;$script:Config.active_backend='omniroute';$script:Config.omniroute_model=$script:PendingModel;$script:Config.omniroute_context=$context;Save-Config
+        $script:LaunchState='wait_harness';$script:LaunchDeadline=(Get-Date).AddMinutes(2);$PrimaryButton.IsEnabled=$false;Set-LaunchPhase 6 'Opening cloud agent' 'Starting Harness with the exact OmniRoute route you selected.' 92;Start-Harness
+    }catch{$script:LaunchState='idle';$PrimaryButton.IsEnabled=$true;Set-OperationFeedback 'Cloud agent could not start' $_.Exception.Message 'error';Set-Log $_.Exception.Message 'error'}
 }
 
 function Update-DeepSeekHarness {
+    if($script:StopOperation.Active){Set-Log 'Wait for the current stop operation to finish before updating Harness.' 'error';return}
     $wasOnline=Test-Port 3080
     $oldModel=[string]$script:PendingModel
     $oldContext=[int]$script:PendingContext
@@ -2203,8 +2537,7 @@ function Update-DeepSeekHarness {
         Set-LaunchPhase 1 'Updating DeepSeek Harness' 'Downloading the newest published Harness package.' 40
         $cmd='set "npm_config_cache={0}"&& "{1}" --yes @deepseek-ai/dsh@latest --version > "{2}" 2> "{3}"' -f $script:NpmCacheDir,$npx,$out,$err
         $p=Start-Process -FilePath 'cmd.exe' -ArgumentList '/d','/s','/c',$cmd -WorkingDirectory ([string]$script:Config.harness_root) -WindowStyle Hidden -PassThru
-        $p.WaitForExit(180000)
-        if(-not $p.HasExited){try{$p.Kill()}catch{};throw 'DeepSeek Harness update timed out after three minutes.'}
+        if(-not (Wait-AgentPortProcessResponsive $p 180)){try{$p.Kill()}catch{};throw 'DeepSeek Harness update timed out after three minutes.'}
         if($p.ExitCode -ne 0){
             $detail=Get-RecentLogText $err 18
             if(-not $detail){$detail=Get-RecentLogText $out 18}
@@ -2244,11 +2577,16 @@ function Update-DeepSeekHarness {
 
 function Get-HarnessStartupUrl {
     $out=$script:HarnessOutLog
-    if(-not (Test-Path -LiteralPath $out)){return ''}
-    $text=Get-Content -LiteralPath $out -Raw -ErrorAction SilentlyContinue
-    if([string]::IsNullOrWhiteSpace([string]$text)){return ''}
-    $match=[regex]::Match([string]$text,'(?m)^dsh web:\s+(http://127\.0\.0\.1:3080/\?token=[A-Za-z0-9_-]+)\s*$')
-    if($match.Success){return $match.Groups[1].Value}
+    # A surviving Harness can be reopened by a fresh launcher process, which
+    # has no in-memory log handle. Look only in AgentPort's own recent logs.
+    $candidates=if($out){@($out)}else{@(Get-ChildItem -LiteralPath (Join-Path $script:AppDataDir 'logs') -Filter 'harness-*.out.log' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 5 -ExpandProperty FullName)}
+    foreach($candidate in $candidates){
+        if(-not (Test-Path -LiteralPath $candidate)){continue}
+        $text=Get-Content -LiteralPath $candidate -Raw -ErrorAction SilentlyContinue
+        if([string]::IsNullOrWhiteSpace([string]$text)){continue}
+        $match=[regex]::Match([string]$text,'(?m)^dsh web:\s+(http://127\.0\.0\.1:3080/\?token=[A-Za-z0-9_-]+)\s*$')
+        if($match.Success){$script:HarnessOutLog=$candidate;return $match.Groups[1].Value}
+    }
     return ''
 }
 
@@ -2257,6 +2595,7 @@ function Set-Log([string]$Text,[string]$Kind='normal'){
     $prefix = if($Kind -eq 'error'){'ERROR'} elseif($Kind -eq 'ok'){'OK'} else {'INFO'}
     $line = "[$time] $prefix  $Text`r`n"
     $LogBox.AppendText($line)
+    if($IntegrationTest -or $IntegrationCurrentModel){Write-Host $line.TrimEnd()}
     $LogBox.ScrollToEnd()
     $StatusText.Text = $Text
 }
@@ -2271,25 +2610,120 @@ function Set-PillState($Element,[string]$Text,[string]$State){
     }
 }
 
-function Refresh-Models {
-    $script:Models = @(Get-InstalledModels)
-    $ModelCombo.Items.Clear()
-    foreach($m in $script:Models){ [void]$ModelCombo.Items.Add($m.Display) }
-    if($script:Models.Count -gt 0){
-        $idx = 0
-        if($script:Config.last_model){
-            for($i=0;$i -lt $script:Models.Count;$i++){ if($script:Models[$i].RelPath -eq $script:Config.last_model){$idx=$i;break} }
-        }
-        $ModelCombo.SelectedIndex = $idx
+function Get-BuiltinModelCatalogueItems {
+    $existing=@($script:Models|Where-Object{$_.Source -in @('Team','NInfer')})
+    $team=@($existing|Where-Object{$_.Source -eq 'Team'}|Select-Object -First 1)
+    if(-not $team){
+        $teamFile=Join-Path $script:AppDataDir 'models\Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf'
+        $team=[pscustomobject]@{Display='Qwen3-Coder 30B A3B | Recommended | Setup status will refresh';Name='Qwen3-Coder 30B A3B - Recommended';RelPath='agentport-fast-qwen3-coder';FullPath=$teamFile;Source='Team';RootPath=(Split-Path $teamFile);HelperFiles=@();SizeBytes=12848766112;SizeGB=11.97;Installed=([IO.File]::Exists($teamFile))}
     }
+    $ninfer=@($existing|Where-Object{$_.Source -eq 'NInfer'}|Select-Object -First 1)
+    if(-not $ninfer){
+        $ninfer=[pscustomobject]@{Display='Qwen3.8 27B min-Q4 | NInfer RTX 4080 | Setup status will refresh';Name='Qwen3.8 27B min-Q4 (NInfer)';RelPath='qwen3.8-27b-minq4';FullPath='';Source='NInfer';RootPath='';HelperFiles=@();SizeBytes=13.47GB;SizeGB=13.47;Installed=$false}
+    }
+    return @($team,$ninfer)
+}
+
+function Load-ModelCatalogueCache {
+    $cached=@()
+    try {
+        if(Test-Path -LiteralPath $script:ModelCatalogueCachePath){
+            $raw=Get-Content -LiteralPath $script:ModelCatalogueCachePath -Raw -ErrorAction Stop|ConvertFrom-Json
+            $cached=@($raw.Models)
+            $script:LastModelScanRoots=@($raw.Roots)
+            $script:ModelCatalogueScannedAt=[string]$raw.ScannedAt
+        }
+    } catch {$cached=@();$script:ModelCatalogueScannedAt=''}
+    $script:Models=@($cached)+@(Get-BuiltinModelCatalogueItems)
+    $dedupe=@{}
+    $script:Models=@($script:Models|Where-Object{if(-not $dedupe.ContainsKey([string]$_.RelPath)){$dedupe[[string]$_.RelPath]=$true;$true}else{$false}})
+}
+
+function Save-ModelCatalogueCache {
+    try {
+        $dir=Split-Path $script:ModelCatalogueCachePath -Parent
+        if(-not(Test-Path -LiteralPath $dir)){New-Item -ItemType Directory -Force -Path $dir|Out-Null}
+        [pscustomobject]@{Models=@($script:Models|Where-Object{$_.Source -notin @('Team','NInfer')});Roots=@($script:LastModelScanRoots);ScannedAt=$script:ModelCatalogueScannedAt}|
+            ConvertTo-Json -Depth 12|Set-Content -LiteralPath $script:ModelCatalogueCachePath -Encoding UTF8
+    } catch {}
+}
+
+function New-ModelScanSnapshot {
+    $environment=@{UserProfile=$env:USERPROFILE;AppData=$env:APPDATA;LocalAppData=$env:LOCALAPPDATA;OllamaModels=$env:OLLAMA_MODELS;UnslothStudioHome=$env:UNSLOTH_STUDIO_HOME;HfHubCache=$env:HF_HUB_CACHE;HfHome=$env:HF_HOME}
+    $builtins=@(Get-BuiltinModelCatalogueItems|ForEach-Object{[ordered]@{Display=[string]$_.Display;Name=[string]$_.Name;RelPath=[string]$_.RelPath;FullPath=[string]$_.FullPath;Source=[string]$_.Source;RootPath=[string]$_.RootPath;HelperFiles=@($_.HelperFiles);SizeBytes=[double]$_.SizeBytes;SizeGB=[double]$_.SizeGB;Installed=[bool]$_.Installed}})
+    return [ordered]@{
+        ModelsRoot=[string]$script:Config.models_root;TextGenRoot=[string]$script:Config.textgen_root
+        UserProfile=$environment.UserProfile;AppData=$environment.AppData;LocalAppData=$environment.LocalAppData
+        OllamaModels=$environment.OllamaModels;UnslothStudioHome=$environment.UnslothStudioHome;HfHubCache=$environment.HfHubCache;HfHome=$environment.HfHome
+        IgnoredModels=@($script:Config.ignored_models|ForEach-Object{[string]$_});ModelHelpers=@($script:Config.model_helpers)
+        BuiltinModels=$builtins;MinimumModelBytes=100MB;ScanBudgetSeconds=$script:BackgroundOperationBudgetSeconds
+    }
+}
+
+function Start-ModelScanAsync {
+    param([scriptblock]$OnCompleted)
+    if($OnCompleted){$script:ModelScanCompletion=$OnCompleted}
+    if($script:ModelScanOperation -and -not (Test-AgentPortBackgroundOperationCompleted $script:ModelScanOperation)){return $false}
+    $snapshot=New-ModelScanSnapshot
+    $payload=[pscustomobject]@{SnapshotJson=($snapshot|ConvertTo-Json -Depth 12);HelperPath=(Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Background.ps1')}
+    $worker=@'
+param($payload)
+$ErrorActionPreference='Stop'
+. $payload.HelperPath
+$snapshot=$payload.SnapshotJson|ConvertFrom-Json
+Get-AgentPortModelCatalogueCore $snapshot
+'@
+    try {$script:ModelScanOperation=New-AgentPortBackgroundOperation -Name 'model-scan' -ScriptText $worker -Payload $payload -TimeoutSeconds ([int]$script:BackgroundOperationBudgetSeconds);return $true}
+    catch {$script:ModelScanOperation=$null;throw}
+}
+
+function Set-ModelVisibilityAll([bool]$Visible) {
+    $selected=Get-SelectedModel
+    $selectedRel=if($selected){[string]$selected.RelPath}else{''}
+    $hidden=@($script:Config.hidden_models|ForEach-Object{[string]$_})
+    $local=@($script:Models|Where-Object{$_.Source -notin @('Team','NInfer')})
+    foreach($model in $local){
+        $rel=[string]$model.RelPath
+        if($Visible){$hidden=@($hidden|Where-Object{$_ -ne $rel})}
+        elseif($hidden -notcontains $rel){$hidden+=$rel}
+    }
+    $script:Config.hidden_models=@($hidden|Select-Object -Unique);Save-Config
+    Refresh-Models $selectedRel
+    if($selectedRel -and @($script:HomeModels|Where-Object{[string]$_.RelPath -eq $selectedRel}).Count -gt 0){Select-HomeModel $selectedRel}
+    elseif($selectedRel -and @($local|Where-Object{[string]$_.RelPath -eq $selectedRel}).Count -gt 0){
+        # Do not silently switch to another model when the selected identity
+        # was hidden. An empty selector is the safe state for the next action.
+        $ModelCombo.SelectedIndex=-1;$script:Config.last_model='';Save-Config;Update-BackendSelectionUi
+    }
+    Set-Log $(if($Visible){'All discovered local models are visible on Home.'}else{'All discovered local models are hidden from Home. Files were not changed.'}) 'ok'
+}
+
+function Refresh-Models {
+    param([string]$PreferredRelPath='')
+    $hidden=@($script:Config.hidden_models)
+    $script:HomeModels=@($script:Models | Where-Object {$_.Source -in @('Team','NInfer') -or [string]$_.RelPath -notin $hidden})
+    $ModelCombo.Items.Clear()
+    foreach($m in $script:HomeModels){ [void]$ModelCombo.Items.Add($m.Display) }
+    $selectedIndex=-1
+    $preferred=if($PreferredRelPath){$PreferredRelPath}else{[string]$script:Config.last_model}
+    if($preferred){for($i=0;$i -lt $script:HomeModels.Count;$i++){if([string]$script:HomeModels[$i].RelPath -eq $preferred){$selectedIndex=$i;break}}}
+    if($selectedIndex -lt 0 -and -not $PreferredRelPath -and -not $script:Config.last_model -and $script:HomeModels.Count -gt 0){$selectedIndex=0}
+    $ModelCombo.SelectedIndex=$selectedIndex
     Refresh-ModelManager
     Update-MemoryFit
 }
 
 function Get-SelectedModel {
     $i = $ModelCombo.SelectedIndex
-    if($i -lt 0 -or $i -ge $script:Models.Count){ return $null }
-    return $script:Models[$i]
+    if($i -lt 0 -or $i -ge $script:HomeModels.Count){ return $null }
+    return $script:HomeModels[$i]
+}
+
+function Select-HomeModel([string]$RelPath){
+    for($i=0;$i -lt $script:HomeModels.Count;$i++){
+        if([string]$script:HomeModels[$i].RelPath -eq $RelPath){$ModelCombo.SelectedIndex=$i;return $true}
+    }
+    return $false
 }
 
 function Update-MemoryFit {
@@ -2376,7 +2810,7 @@ function Refresh-ModelManager {
     $managed=@($script:Models | Where-Object {$_.Source -notin @('NInfer','Team')})
     if($managed.Count -eq 0){
         $t = New-Object System.Windows.Controls.TextBlock
-        $t.Text='No GGUF models found in your models folder.'; $t.Foreground='#8A8A9A'; $t.Margin='4,8,4,8'
+        $t.Text='No local GGUF models found. Scan known locations or install one above.'; $t.Foreground='#8A8A9A'; $t.Margin='4,8,4,8'
         [void]$ModelListPanel.Children.Add($t); return
     }
     foreach($m in $managed){
@@ -2385,26 +2819,52 @@ function Refresh-ModelManager {
         $grid = New-Object System.Windows.Controls.Grid
         $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='*'}))
         $grid.ColumnDefinitions.Add((New-Object System.Windows.Controls.ColumnDefinition -Property @{Width='Auto'}))
+        $choose=New-Object System.Windows.Controls.CheckBox
+        $choose.Content='On Home';$choose.Tag=$m.RelPath;$choose.VerticalAlignment='Center';$choose.Margin='0,0,18,0';$choose.Style=$Window.FindResource('ModelVisibilityCheck')
+        $choose.IsChecked=([string]$m.RelPath -notin @($script:Config.hidden_models))
+        $choose.Add_Click({param($s,$e)
+            $rel=[string]$s.Tag
+            $selectedBefore=Get-SelectedModel
+            $selectedRel=if($selectedBefore){[string]$selectedBefore.RelPath}else{''}
+            $hidden=@($script:Config.hidden_models | Where-Object {[string]$_ -ne $rel})
+            if(-not [bool]$s.IsChecked){$hidden+= $rel}
+            $script:Config.hidden_models=@($hidden);Save-Config;Refresh-Models $selectedRel
+            if($selectedRel -and @($script:HomeModels|Where-Object{[string]$_.RelPath -eq $selectedRel}).Count -gt 0){Select-HomeModel $selectedRel}
+            elseif($selectedRel -eq $rel -and -not [bool]$s.IsChecked){$ModelCombo.SelectedIndex=-1;$script:Config.last_model='';Save-Config;Update-BackendSelectionUi}
+            Set-Log $(if([bool]$s.IsChecked){'Model added to the Home model list.'}else{'Model hidden from Home. Its file is unchanged.'}) 'ok'
+        })
         $stack = New-Object System.Windows.Controls.StackPanel
-        $name = New-Object System.Windows.Controls.TextBlock; $name.Text=$m.Name; $name.Foreground='White'; $name.FontWeight='SemiBold'; $name.FontSize=14
+        $name = New-Object System.Windows.Controls.TextBlock; $name.Text=$m.Name; $name.Foreground='White'; $name.FontWeight='SemiBold'; $name.FontSize=14; $name.TextTrimming='CharacterEllipsis'; $name.ToolTip=$m.FullPath
         $meta = New-Object System.Windows.Controls.TextBlock
         $meta.Text=('Unverified existing model   |   '+(Format-Size $m.SizeBytes)+'   |   '+$m.Source)
         $meta.Foreground='#777788'; $meta.FontSize=11; $meta.Margin='0,4,8,0'
         [void]$stack.Children.Add($name); [void]$stack.Children.Add($meta)
         [System.Windows.Controls.Grid]::SetColumn($stack,0); [void]$grid.Children.Add($stack)
         $actions=New-Object System.Windows.Controls.StackPanel; $actions.Orientation='Horizontal'; $actions.Margin='12,0,0,0'
-        $use = New-Object System.Windows.Controls.Button; $use.Padding='14,8'; $use.Content='Use this model'; $use.Tag=$m.RelPath; $use.Style=$Window.FindResource('ModernButton')
-        $use.Add_Click({ param($s,$e)
-            for($i=0;$i -lt $script:Models.Count;$i++){if($script:Models[$i].RelPath -eq [string]$s.Tag){$ModelCombo.SelectedIndex=$i;break}}
-            Switch-Page 'Home'; Update-MemoryFit; Set-Log 'Existing model selected. Review the 48k memory estimate, then start.' 'ok'
+        [void]$actions.Children.Add($choose)
+        $helper = New-Object System.Windows.Controls.Button; $helper.Padding='14,8'; $helper.Margin='0,0,8,0'
+        $helper.Content=if(@($m.HelperFiles).Count -gt 0){'Helper linked'}else{'Add helper'}
+        $helper.Tag=$m.FullPath;$helper.Style=$Window.FindResource('ModernButton')
+        $helper.Add_Click({param($s,$e)
+            $modelPath=[string]$s.Tag
+            $dlg=New-Object Microsoft.Win32.OpenFileDialog
+            $dlg.Title='Select projector / helper (mmproj) GGUF';$dlg.Filter='Projector helper (*mmproj*.gguf)|*mmproj*.gguf|GGUF file (*.gguf)|*.gguf|All files (*.*)|*.*'
+            if($dlg.ShowDialog()){
+                Set-ModelHelper $modelPath $dlg.FileName
+                Set-Log ('Helper selected for '+[IO.Path]::GetFileName($modelPath)+'.') 'ok'
+                Refresh-Models
+            }
         })
-        [void]$actions.Children.Add($use)
+        [void]$actions.Children.Add($helper)
         $btn = New-Object System.Windows.Controls.Button; $btn.Padding='14,8'; $btn.Margin='8,0,0,0'
-        $btn.Content='Delete'; $btn.Tag=$m.FullPath; $btn.Style=$Window.FindResource('DangerButton')
+        $btn.Content='Remove'; $btn.Tag=$m.FullPath; $btn.DataContext=$m.RelPath; $btn.Style=$Window.FindResource('ModernButton'); $btn.ToolTip='Remove from AgentPort only. The GGUF file stays on your drive.'
         $btn.Add_Click({ param($s,$e)
             $path=[string]$s.Tag
-            $answer=[System.Windows.MessageBox]::Show("Permanently delete this model file?`n`n$path",'Delete model',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
-            if($answer -eq [System.Windows.MessageBoxResult]::Yes){ try{ Remove-Item -LiteralPath $path -Force; Set-Log 'Model deleted.' 'ok'; Refresh-Models }catch{ [System.Windows.MessageBox]::Show($_.Exception.Message,'Delete failed') } }
+            $rel=[string]$s.DataContext
+            $script:Config.ignored_models=@($script:Config.ignored_models | Where-Object {[string]$_ -ne $path})+@($path)
+            $script:Config.hidden_models=@($script:Config.hidden_models | Where-Object {[string]$_ -ne $rel})
+            $script:Config.model_helpers=@($script:Config.model_helpers | Where-Object {[string]$_.model -ne $path})
+            Save-Config;Set-Log 'Model removed from AgentPort. Its GGUF file remains on your drive.' 'ok';Refresh-Models
         })
         [void]$actions.Children.Add($btn)
         [System.Windows.Controls.Grid]::SetColumn($actions,1); [void]$grid.Children.Add($actions)
@@ -2427,7 +2887,10 @@ function Switch-Page([string]$Name){
         if($v){ $v.Visibility='Collapsed' }
     }
     $target = Get-Variable -Name ($Name+'Page') -Scope Script -ValueOnly -ErrorAction SilentlyContinue
-    if($target){ $target.Visibility='Visible' }
+    if($target){
+        $target.Visibility='Visible'
+        if($target -is [System.Windows.Controls.ScrollViewer]){$target.ScrollToTop()}
+    }
     foreach($n in @('Home','Models','Runtimes','Skills','Settings')){
         $b = Get-Variable -Name ('Nav'+$n) -Scope Script -ValueOnly -ErrorAction SilentlyContinue
         if($b){ $b.Tag = if($n -eq $Name){'active'}else{'inactive'} }
@@ -2460,17 +2923,26 @@ function Inspect-HfRepo {
         $InspectButton.IsEnabled=$false; $InspectButton.Content='Checking...'; $RepoStatus.Text='Reading GGUF files from Hugging Face...'
         $url='https://huggingface.co/api/models/'+$repo+'/tree/main'
         $data=Invoke-RestMethod -Uri $url -TimeoutSec 20 -Headers @{'User-Agent'='AgentPort/1.0'}
-        $script:RepoFiles=@()
+        $script:RepoFiles=@();$script:RepoHelpers=@()
         $RepoFileCombo.Items.Clear()
+        $RepoHelperCombo.Items.Clear();[void]$RepoHelperCombo.Items.Add('No helper (text-only model)')
         foreach($item in $data){
             $path=[string]$item.path
-            if($path -like '*.gguf' -and [IO.Path]::GetFileName($path) -notlike 'mmproj-*'){
+            if($path -like '*.gguf'){
                 $size=0; if($item.lfs -and $item.lfs.size){$size=[double]$item.lfs.size}elseif($item.size){$size=[double]$item.size}
                 $obj=[pscustomobject]@{ Repo=$repo; Path=$path; Size=$size; Display=([IO.Path]::GetFileName($path)+'   |   '+(Format-Size $size)) }
-                $script:RepoFiles += $obj; [void]$RepoFileCombo.Items.Add($obj.Display)
+                if([IO.Path]::GetFileName($path) -match '(?i)mmproj'){
+                    $script:RepoHelpers += $obj;[void]$RepoHelperCombo.Items.Add($obj.Display)
+                }else{
+                    $script:RepoFiles += $obj;[void]$RepoFileCombo.Items.Add($obj.Display)
+                }
             }
         }
-        if($script:RepoFiles.Count -gt 0){ $RepoFileCombo.SelectedIndex=0; $RepoStatus.Text=('{0} GGUF files found. Choose the quant you want.' -f $script:RepoFiles.Count) } else { $RepoStatus.Text='No GGUF files found in the repository root.' }
+        $RepoHelperCombo.SelectedIndex=0
+        if($script:RepoFiles.Count -gt 0){
+            $RepoFileCombo.SelectedIndex=0
+            $RepoStatus.Text=if($script:RepoHelpers.Count -gt 0){('{0} model files and {1} optional helpers found. Choose both below.' -f $script:RepoFiles.Count,$script:RepoHelpers.Count)}else{('{0} model files found. This repository does not provide an mmproj helper.' -f $script:RepoFiles.Count)}
+        } else { $RepoStatus.Text='No model GGUF files were found in the repository root.' }
     }catch{ $RepoStatus.Text=$_.Exception.Message; [System.Windows.MessageBox]::Show($_.Exception.Message,'Hugging Face') | Out-Null }
     finally{ $InspectButton.IsEnabled=$true; $InspectButton.Content='Inspect files' }
 }
@@ -2483,13 +2955,23 @@ function Start-HfDownload {
     $targetDir=Join-Path ([string]$script:Config.models_root) $folder
     if(-not (Test-Path $targetDir)){New-Item -ItemType Directory -Force -Path $targetDir|Out-Null}
     $dest=Join-Path $targetDir ([IO.Path]::GetFileName($f.Path))
-    $url='https://huggingface.co/'+$f.Repo+'/resolve/main/'+($f.Path -replace ' ','%20')+'?download=true'
+    $sources=@('https://huggingface.co/'+$f.Repo+'/resolve/main/'+($f.Path -replace ' ','%20')+'?download=true')
+    $destinations=@($dest);$expected=[double]$f.Size;$helperDest=''
+    $helperIndex=$RepoHelperCombo.SelectedIndex-1
+    if($helperIndex -ge 0 -and $helperIndex -lt $script:RepoHelpers.Count){
+        $helper=$script:RepoHelpers[$helperIndex]
+        $helperDest=Join-Path $targetDir ([IO.Path]::GetFileName($helper.Path))
+        $sources+=('https://huggingface.co/'+$helper.Repo+'/resolve/main/'+($helper.Path -replace ' ','%20')+'?download=true')
+        $destinations+=$helperDest;$expected+=[double]$helper.Size
+    }
     $jobName='DSH_'+([guid]::NewGuid().ToString('N'))
     try{
         Import-Module BitsTransfer -ErrorAction Stop
-        Start-BitsTransfer -Source $url -Destination $dest -DisplayName $jobName -Asynchronous | Out-Null
-        $script:Download=[pscustomobject]@{Name=$jobName;Dest=$dest;Expected=[double]$f.Size}
-        $DownloadButton.IsEnabled=$false; $DownloadProgress.Value=0; $RepoStatus.Text='Downloading model... you can keep using the manager.'; Set-Log ('Downloading '+$f.Path)
+        Start-BitsTransfer -Source $sources -Destination $destinations -DisplayName $jobName -Asynchronous | Out-Null
+        $script:Download=[pscustomobject]@{Name=$jobName;Dest=$dest;HelperDest=$helperDest;Expected=$expected}
+        $DownloadButton.IsEnabled=$false;$DownloadProgress.Value=0
+        $RepoStatus.Text=if($helperDest){'Downloading model and helper...'}else{'Downloading model...'}
+        Set-Log ('Downloading '+$f.Path+$(if($helperDest){' with '+[IO.Path]::GetFileName($helperDest)}else{''}))
     }catch{
         [System.Windows.MessageBox]::Show('Could not start Windows BITS download: '+$_.Exception.Message,'Download failed')|Out-Null
     }
@@ -2504,6 +2986,7 @@ function Poll-Download {
         if($j.BytesTotal -gt 0){ $DownloadProgress.Value=[math]::Min(100,($j.BytesTransferred/$j.BytesTotal)*100); $RepoStatus.Text=('Downloading | {0:N1}% | {1} / {2}' -f $DownloadProgress.Value,(Format-Size $j.BytesTransferred),(Format-Size $j.BytesTotal)) }
         if($j.JobState -eq 'Transferred'){
             Complete-BitsTransfer -BitsJob $j
+            if($script:Download.HelperDest){Set-ModelHelper $script:Download.Dest $script:Download.HelperDest}
             $DownloadProgress.Value=100; $DownloadButton.IsEnabled=$true; $RepoStatus.Text='Installed. The model is ready on the Home screen.'; Set-Log 'Model download complete.' 'ok'; $script:Download=$null; Refresh-Models; Switch-Page 'Home'
         } elseif($j.JobState -in @('Error','TransientError')){
             $msg=[string]$j.ErrorDescription; Remove-BitsTransfer -BitsJob $j -Confirm:$false -ErrorAction SilentlyContinue; $script:Download=$null; $DownloadButton.IsEnabled=$true; $RepoStatus.Text='Download failed: '+$msg; Set-Log $msg 'error'
@@ -2524,6 +3007,7 @@ function Import-LocalGguf {
         if(-not(Test-Path $targetDir)){New-Item -ItemType Directory -Force -Path $targetDir|Out-Null}
         $dest=Join-Path $targetDir ([IO.Path]::GetFileName($src))
         Copy-Item -LiteralPath $src -Destination $dest -Force
+        $script:Config.ignored_models=@($script:Config.ignored_models | Where-Object {[string]$_ -ne $dest});Save-Config
         $helpers=@(Find-RelatedMmproj $src)
         foreach($h in $helpers){ Copy-Item -LiteralPath $h -Destination (Join-Path $targetDir ([IO.Path]::GetFileName($h))) -Force }
         if($helpers.Count -gt 0){
@@ -2554,6 +3038,11 @@ function Import-LocalGguf {
 }
 
 function Start-UnifiedStack {
+    if($script:StopOperation.Active -or $script:LaunchState -ne 'idle' -or $script:TeamStarting){return}
+    # Reject in-flight probes and the previous model's cached Ready state.
+    $script:StopOperation.Generation++;$script:RuntimeSnapshot=$null
+    $modelStartGeneration=$script:ModelStopGeneration
+    $harnessStartGeneration=$script:StopOperation.Generation
     $m=Get-SelectedModel
     if($m -and $m.Source -eq 'Team'){Start-AgentPortTeam;return}
     if($m -and $m.Source -eq 'NInfer'){Start-AgentPortNInfer; return}
@@ -2567,12 +3056,12 @@ function Start-UnifiedStack {
     if($MaxTokensCombo.SelectedItem){ [int]::TryParse(([string]$MaxTokensCombo.SelectedItem -replace ',',''),[ref]$max) | Out-Null }
     $max=[math]::Min($max,$ctx)
     try{
+        $keepHarness=$script:HarnessOwnership -and (Test-Port 3080) -and -not (Test-Port $script:BackendPort) -and (Test-ModelMatch ([string]$script:Config.active_model) $m.RelPath) -and ([int]$script:Config.active_context_tokens -eq $ctx)
         $script:InstallOnlyMode=$false
+        $script:HarnessOnlyLaunch=$false
         $PrimaryButton.IsEnabled=$false
         Set-LaunchPhase 1 'Preflight' 'Checking folders, hardware profile and selected model.' 6
         Ensure-AgentPortRuntimeDirs
-        $root=[string]$script:Config.textgen_root
-        if($root -match '\s'){ throw "TextGen's runtime folder cannot contain spaces. Change it in Settings: $root" }
         if(-not (Test-Path -LiteralPath $m.FullPath)){ throw "Selected GGUF no longer exists: $($m.FullPath)" }
         if($m.HelperFiles -and $m.HelperFiles.Count -gt 0){ Set-Log ('Helper file detected for multimodal GGUF: '+[IO.Path]::GetFileName($m.HelperFiles[0])) 'ok' }
 
@@ -2585,39 +3074,51 @@ function Start-UnifiedStack {
         $script:Config.draft_mtp=($spec -ne 'Off')
         $script:Config.max_tokens=$max
         $script:Config.active_model=$m.RelPath
+        $script:Config.active_backend='local'
         $script:Config.active_context_tokens=$ctx
         $script:Config.active_offload_mode=$offload
         Save-Config
         Prepare-IsolatedHarnessSkills
-        Write-TextGenFlags $m.RelPath $ctx $cache $offload $spec
-        Update-HarnessSettings $m.RelPath $m.Name $ctx $max
+        Update-HarnessSettings $m.RelPath $m.Name $ctx $max (@($m.HelperFiles).Count -gt 0)
         $script:PendingModel=$m.RelPath
         $script:PendingContext=$ctx
 
-        Set-LaunchPhase 3 'Preparing local runtime' 'Stopping stale local processes and checking the TextGen installation.' 21
-        Kill-Stack
+        Set-LaunchPhase 3 'Preparing local runtime' $(if($keepHarness){'Reloading the model. Your existing Harness session stays open.'}else{'Preparing the selected model and its Harness profile.'}) 21
+        if(-not $keepHarness){Kill-Stack}
+        if($script:ModelStopGeneration -ne $modelStartGeneration){throw [OperationCanceledException]::new('Model startup cancelled.')}
         Start-Sleep -Milliseconds 250
 
-        if(Test-TextGenInstalled){
-            Set-LaunchPhase 4 'Starting TextGen' 'Launching the isolated TextGen Python/CUDA runtime.' 42
-            Start-TextGen
+        $managedRuntime=Get-AgentPortTeamRuntime
+        if(-not $managedRuntime){
+            $answer=[Windows.MessageBox]::Show("AgentPort needs its managed NVIDIA GPU backend to run this GGUF.`n`nInstall it now? Models are preserved and TextGen is not required.",'Install GPU backend',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Information)
+            if($answer -ne [Windows.MessageBoxResult]::Yes){throw 'GPU backend installation was cancelled.'}
+            Set-LaunchPhase 3 'Installing GPU backend' 'Downloading the verified portable CUDA runtime.' 28
+            $installer=Join-Path $PSScriptRoot 'ninfer-4080\Install-Team.ps1'
+            $install=Start-Process powershell.exe -ArgumentList @('-NoProfile','-ExecutionPolicy','RemoteSigned','-File',('"'+$installer+'"'),'-RuntimeOnly') -WindowStyle Hidden -Wait -PassThru
+            if($install.ExitCode -ne 0){throw 'The managed GPU backend could not be installed. Check your internet connection and retry.'}
+            $managedRuntime=Get-AgentPortTeamRuntime
+        }
+        if($managedRuntime){
+            Set-LaunchPhase 4 'Starting GPU backend' 'Loading this GGUF directly with the managed CUDA runtime.' 42
+            $logs=Join-Path $script:AppDataDir 'team-logs';New-Item -ItemType Directory -Force -Path $logs | Out-Null
+            $args=@('-m',('"'+$m.FullPath+'"'),'--host','127.0.0.1','--port',[string]$script:BackendPort,'--api-key','local-textgen','--alias',$m.RelPath,'-c',$ctx,'-ngl',[string]$script:OffloadModes[$offload].gpu_layers,'-ctk',$cache,'-ctv',$cache,'--parallel','1','--reasoning','off','--no-reasoning-preserve','--metrics')
+            if($null -ne $script:OffloadModes[$offload].fit_target){$args+=@('--fit-target',[string]$script:OffloadModes[$offload].fit_target)}
+            if($m.HelperFiles -and $m.HelperFiles.Count -gt 0){$args+=@('--mmproj',('"'+$m.HelperFiles[0]+'"'))}
+            if($script:ModelStopGeneration -ne $modelStartGeneration){throw [OperationCanceledException]::new('Model startup cancelled.')}
+            $script:TextGenProcess=Start-Process $managedRuntime -ArgumentList $args -WindowStyle Hidden -PassThru -RedirectStandardOutput (Join-Path $logs 'llama.out.log') -RedirectStandardError (Join-Path $logs 'llama.err.log')
+            $script:TextGenOwnership=Get-AgentPortProcessRecord ([int]$script:TextGenProcess.Id) $script:TextGenProcess
+            $script:SuppressHarnessStart=($harnessStartGeneration -ne $script:StopOperation.Generation)
             $script:LaunchState='wait_textgen'
             $script:LaunchDeadline=(Get-Date).AddMinutes(5)
-            $PrimaryButton.Content='Starting TextGen...'
-            Set-LaunchPhase 4 'Starting TextGen' 'Process launched. Waiting for the API to bind to 127.0.0.1:5100.' 52
+            $PrimaryButton.Content='Starting GPU backend...'
+            Set-LaunchPhase 4 'Starting GPU backend' ("Model is loading. Waiting for the local API on port $script:BackendPort.") 52
             Set-Log ('Starting '+$m.Name+' | '+('{0:N0}' -f $ctx)+' tokens | '+$offload)
         } else {
-            $answer=[System.Windows.MessageBox]::Show(
-                "AgentPort needs to prepare the local TextGen runtime once.`n`nIt will download an isolated Python/CUDA environment and may use around 10 GB of disk space. No separate Python, Git or CUDA install is required.`n`nContinue?",
-                'First-run local runtime setup',
-                [System.Windows.MessageBoxButton]::YesNo,
-                [System.Windows.MessageBoxImage]::Information
-            )
-            if($answer -ne [System.Windows.MessageBoxResult]::Yes){ throw 'First-run setup was cancelled.' }
-            Begin-TextGenBootstrap
+            throw 'The managed GPU backend is unavailable after installation. Check your internet connection, then retry.'
         }
     }catch{
         $script:LaunchState='idle'
+        if($_.Exception -is [OperationCanceledException]){$PrimaryButton.IsEnabled=-not $script:StopOperation.Active;Set-Log $_.Exception.Message;return}
         $PrimaryButton.IsEnabled=$true
         $PrimaryButton.Content='Apply & Start'
         Set-LaunchPhase ([math]::Max(1,$script:LaunchPhase)) 'Startup failed' $_.Exception.Message $LaunchProgress.Value 'error'
@@ -2627,6 +3128,9 @@ function Start-UnifiedStack {
 }
 
 function Poll-Launch {
+    if($script:StopOperation.Active){return}
+    $runtime=$script:RuntimeSnapshot
+    if($runtime -and [int]$runtime.StopGeneration -ne [int]$script:StopOperation.Generation){$runtime=$null}
     if($script:LaunchState -eq 'install_textgen'){
         if((Get-Date) -gt $script:LaunchDeadline){
             try{ if($script:BootstrapProcess -and -not $script:BootstrapProcess.HasExited){ $script:BootstrapProcess.Kill() } }catch{}
@@ -2693,14 +3197,13 @@ function Poll-Launch {
         if($script:TextGenProcess){
             try{
                 $script:TextGenProcess.Refresh()
-                if($script:TextGenProcess.HasExited -and -not (Test-Port 5100)){
-                    $root=[string]$script:Config.textgen_root
-                    $err=Get-RecentLogText (Join-Path $root 'logs\textgen.err.log') 10
-                    $out=Get-RecentLogText (Join-Path $root 'logs\textgen.out.log') 6
+                if($script:TextGenProcess.HasExited -and -not ($runtime -and $runtime.BackendOnline)){
+                    $err=Get-RecentLogText (Join-Path $script:AppDataDir 'team-logs\llama.err.log') 15
+                    $out=Get-RecentLogText (Join-Path $script:AppDataDir 'team-logs\llama.out.log') 6
                     $detail=if($err){$err}elseif($out){$out}else{('TextGen process exited with code '+$script:TextGenProcess.ExitCode+'.')}
                     $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
-                    Set-LaunchPhase 4 'TextGen exited before API startup' $detail $LaunchProgress.Value 'error'
-                    Set-Log ('TextGen exited before opening port 5100. '+$detail) 'error'
+            Set-LaunchPhase 4 'GGUF backend exited before API startup' $detail $LaunchProgress.Value 'error'
+                    Set-Log ("GGUF backend exited before opening port $script:BackendPort. "+$detail) 'error'
                     return
                 }
             }catch{}
@@ -2708,23 +3211,24 @@ function Poll-Launch {
         if((Get-Date) -gt $script:LaunchDeadline){
             $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
             $root=[string]$script:Config.textgen_root
-            $detail=Get-RecentLogText (Join-Path $root 'logs\textgen.err.log') 10
-            if(-not $detail){$detail='TextGen did not open API port 5100 within five minutes.'}
+            $detail=Get-RecentLogText (Join-Path $script:AppDataDir 'team-logs\llama.err.log') 10
+            if(-not $detail){$detail="GGUF backend did not open API port $script:BackendPort within five minutes."}
             Set-LaunchPhase 4 'TextGen startup timed out' $detail $LaunchProgress.Value 'error'
             Set-Log 'TextGen timed out. Open Runtimes for the exact error log.' 'error'
             return
         }
-        if(Test-Port 5100){
-            Set-LaunchPhase 5 'Verifying model' 'TextGen API is online. Confirming the selected GGUF is loaded.' 84
-            $loaded=Get-LoadedModel
+        if($runtime -and $runtime.BackendOnline){
+            Set-LaunchPhase 5 'Verifying model' 'Managed GGUF backend is online. Confirming the selected model is loaded.' 84
+            $loaded=[string]$runtime.LoadedModel
             if(Test-ModelMatch $script:PendingModel $loaded){
+                if($script:SuppressHarnessStart){$script:SuppressHarnessStart=$false;$script:LaunchState='idle';$PrimaryButton.IsEnabled=$true;Set-OperationFeedback 'Model loaded' 'Harness was left closed as requested. Use Open Harness when ready.' 'ok';return}
                 try{
-                    Set-LaunchPhase 6 'Starting Harness' 'Model verified. Starting the agent Harness and connecting it to TextGen.' 92
+                    Set-LaunchPhase 6 'Starting Harness' 'Model verified. Starting the agent Harness and connecting it to the local backend.' 92
                     Start-Harness
                     $script:LaunchState='wait_harness'
                     $script:LaunchDeadline=(Get-Date).AddSeconds(120)
                     $PrimaryButton.Content='Starting Harness...'
-                    Set-Log ('TextGen verified: '+[IO.Path]::GetFileName($loaded)+' | starting Harness') 'ok'
+                    Set-Log ('GGUF backend verified: '+[IO.Path]::GetFileName($loaded)+' | starting Harness') 'ok'
                 }catch{
                     $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply & Start'
                     Set-LaunchPhase 6 'Harness launch failed' $_.Exception.Message $LaunchProgress.Value 'error'
@@ -2738,7 +3242,7 @@ function Poll-Launch {
         if($script:HarnessProcess){
             try {
                 $script:HarnessProcess.Refresh()
-                if($script:HarnessProcess.HasExited -and -not (Test-Port 3080)){
+                if($script:HarnessProcess.HasExited -and -not ($runtime -and $runtime.HarnessOnline)){
                     $root=[string]$script:Config.textgen_root
                     $detail=Get-RecentLogText $script:HarnessErrLog 12
                     if(-not $detail){$detail='Harness stopped before opening port 3080.'}
@@ -2760,7 +3264,7 @@ function Poll-Launch {
             Set-Log 'Harness timed out. Open Runtimes for the exact error log.' 'error'
             return
         }
-        if(Test-Port 3080){
+        if($runtime -and $runtime.HarnessOnline){
             $startupUrl=''
             if($script:OpenHarnessWhenReady){
                 $startupUrl=Get-HarnessStartupUrl
@@ -2770,8 +3274,17 @@ function Poll-Launch {
                 }
             }
             $script:LaunchState='idle'; $PrimaryButton.IsEnabled=$true; $PrimaryButton.Content='Apply / Switch'
+            if($script:HarnessOnlyLaunch){
+                $script:HarnessOnlyLaunch=$false
+                $LaunchProgressCard.Visibility='Collapsed'
+                $detail=if($runtime.BackendOnline){'Your loaded model is ready. No model reload was needed.'}else{'Your chats are available. Load a model on Home before sending a prompt.'}
+                Set-OperationFeedback 'Harness is open' $detail 'ok';Set-Log ('Harness opened. '+$detail) 'ok'
+                if($script:OpenHarnessWhenReady){Start-Process $startupUrl}
+                Refresh-Runtime
+                return
+            }
             $isNInfer=($script:PendingModel -eq 'qwen3.8-27b-minq4')
-            $backend=if($isNInfer){'NInfer RTX 4080'}elseif($script:PendingModel -eq 'agentport-fast-qwen3-coder'){'AgentPort Fast'}else{'Compatible GGUF runtime'}
+            $backend=if([string]$script:Config.active_backend -eq 'omniroute'){'OmniRoute Cloud'}elseif($isNInfer){'NInfer RTX 4080'}elseif($script:PendingModel -eq 'agentport-fast-qwen3-coder'){'AgentPort Fast'}else{'Compatible GGUF runtime'}
             Set-LaunchPhase 7 'Ready' "$backend, the selected model and Harness are synchronised." 100 'ok'
             Set-Log "$backend + Harness are synchronised and ready." 'ok'
             Update-BackendSelectionUi
@@ -2780,54 +3293,72 @@ function Poll-Launch {
     }
 }
 
-function Refresh-Runtime {
-    Refresh-InstallStatus
-    if($script:StatusBusy){return}; $script:StatusBusy=$true
-    try{
-        $tg=Test-Port 5100; $ds=Test-Port 3080
-        $TextGenStatus.Text=if($tg){'Running'}else{'Stopped'}
-        $HarnessStatus.Text=if($ds){'Open'}else{'Closed'}
-        $TextGenDot.Fill = if($tg){'#51E57A'}else{'#4B4B56'}
-        $HarnessDot.Fill = if($ds){'#51E57A'}else{'#4B4B56'}
-        $TextGenOnline.Text = if($tg){'Online'}else{'Offline'}
-        $HarnessOnline.Text = if($ds){'Online'}else{'Offline'}
-        $TextGenOnline.Foreground = if($tg){'#51E57A'}else{'#70707C'}
-        $HarnessOnline.Foreground = if($ds){'#51E57A'}else{'#70707C'}
-        if($tg){
-            $loaded=Get-LoadedModel
-            $isNInfer=($loaded -eq 'qwen3.8-27b-minq4')
-            if($BackendName){$BackendName.Text=if($isNInfer){'NInfer'}elseif($loaded -eq 'agentport-fast-qwen3-coder'){'Local model'}else{'GGUF model'}}
-            Update-AgentPortTeamMetrics
-            if($loaded){
-                $RuntimeModel.Text=[IO.Path]::GetFileName($loaded)
-                if(Test-ModelMatch ([string]$script:Config.active_model) $loaded){
-                    $ctx=[int]$script:Config.active_context_tokens
-                    $mode=[string]$script:Config.active_offload_mode
-                    $RuntimeContext.Text=('{0:N0} token context' -f $ctx)
-                    $RuntimeOffload.Text=Get-GpuPlacementSummary
-                } else {
-                    $RuntimeContext.Text='Context unknown'
-                    $RuntimeOffload.Text='Loaded externally'
-                }
-                $RuntimeApi.Text=if($loaded -eq 'qwen3.8-27b-minq4'){'NInfer speed mode'}elseif($loaded -eq 'agentport-fast-qwen3-coder'){'Creative tools ready'}else{'Existing GGUF model'}
-                $RuntimeState.Text='Ready'; $RuntimeState.Foreground='#51E57A'; $RuntimeStateDot.Fill='#51E57A'
-                if($script:LaunchState -eq 'idle'){Update-BackendSelectionUi}
-            } else {
-                $RuntimeModel.Text='No model loaded'; $RuntimeContext.Text='TextGen is online'; $RuntimeOffload.Text='Model offloaded'; $RuntimeApi.Text='TextGen API :5100'
-                $RuntimeState.Text='Offloaded'; $RuntimeState.Foreground='#A894FF'; $RuntimeStateDot.Fill='#8A6DFF'
-                if($script:LaunchState -eq 'idle'){$PrimaryButton.Content='Load selected model'}
-            }
-        } else {
-            if($BackendName){$BackendName.Text='Backend'}
-            $RuntimeModel.Text='Nothing running yet'; $RuntimeContext.Text='48k recommended'; $RuntimeOffload.Text='GPU priority is the default'; $RuntimeApi.Text='Tools connect automatically'
-            $RuntimeState.Text='Stopped'; $RuntimeState.Foreground='#858596'; $RuntimeStateDot.Fill='#4B4B56'
+function New-RuntimeProbeSnapshot {
+    $install=[ordered]@{TextGen=[string]$TextGenInstallFlag.Text;Harness=[string]$HarnessInstallFlag.Text;Managed=[string]$ManagedRuntimeFlag.Text;Recommended=[string]$RecommendedModelFlag.Text;NInfer=[string]$NInferInstallFlag.Text;Mcp=[string]$McpInstallFlag.Text}
+    return [ordered]@{
+        MetricsEnabled=($script:PendingModel -eq 'agentport-fast-qwen3-coder');Install=$install;StopGeneration=[int]$script:StopOperation.Generation
+    }
+}
+
+function Start-RuntimeProbeAsync {
+    if($script:RuntimeProbeOperation -and -not (Test-AgentPortBackgroundOperationCompleted $script:RuntimeProbeOperation)){return}
+    $snapshot=New-RuntimeProbeSnapshot
+    $payload=[pscustomobject]@{SnapshotJson=($snapshot|ConvertTo-Json -Depth 10);HelperPath=(Join-Path $PSScriptRoot 'ninfer-4080\AgentPort.Background.ps1')}
+    $worker=@'
+param($payload)
+$ErrorActionPreference='Stop'
+. $payload.HelperPath
+$snapshot=$payload.SnapshotJson|ConvertFrom-Json
+Get-AgentPortRuntimeSnapshotCore $snapshot
+'@
+    try{$script:RuntimeProbeOperation=New-AgentPortBackgroundOperation -Name 'runtime-probe' -ScriptText $worker -Payload $payload -TimeoutSeconds 8}catch{$script:RuntimeProbeOperation=$null}
+}
+
+function Render-RuntimeSnapshot {
+    param([Parameter(Mandatory)]$Snapshot)
+    $tg=[bool]$Snapshot.BackendOnline;$ds=[bool]$Snapshot.HarnessOnline
+    $TextGenStatus.Text=if($tg){'Running'}else{'Stopped'};$HarnessStatus.Text=if($ds){'Open'}else{'Closed'}
+    $TextGenDot.Fill=if($tg){'#51E57A'}else{'#4B4B56'};$HarnessDot.Fill=if($ds){'#51E57A'}else{'#4B4B56'}
+    $TextGenOnline.Text=if($tg){'Online'}else{'Offline'};$HarnessOnline.Text=if($ds){'Online'}else{'Offline'}
+    $TextGenOnline.Foreground=if($tg){'#51E57A'}else{'#70707C'};$HarnessOnline.Foreground=if($ds){'#51E57A'}else{'#70707C'}
+    $loaded=[string]$Snapshot.LoadedModel
+    if($tg){
+        $isNInfer=($loaded -eq 'qwen3.8-27b-minq4')
+        if($BackendName){$BackendName.Text=if($isNInfer){'NInfer'}elseif($loaded -eq 'agentport-fast-qwen3-coder'){'Local model'}else{'GGUF model'}}
+        if($loaded){
+            $RuntimeModel.Text=[IO.Path]::GetFileName($loaded)
+            if(Test-ModelMatch ([string]$script:Config.active_model) $loaded){$RuntimeContext.Text=('{0:N0} token context' -f [int]$script:Config.active_context_tokens);$RuntimeOffload.Text='GPU placement | status sampled off-thread'}else{$RuntimeContext.Text='Context unknown';$RuntimeOffload.Text='Loaded externally'}
+            $RuntimeApi.Text=if($isNInfer){'NInfer speed mode'}elseif($loaded -eq 'agentport-fast-qwen3-coder'){'Creative tools ready'}else{'Existing GGUF model'}
+            $RuntimeState.Text='Ready';$RuntimeState.Foreground='#51E57A';$RuntimeStateDot.Fill='#51E57A'
             if($script:LaunchState -eq 'idle'){Update-BackendSelectionUi}
-        }
-        if($RuntimeOpenUiButton){$RuntimeOpenUiButton.IsEnabled=$ds}
-        if($StopBackendButton){$StopBackendButton.IsEnabled=$tg}
-        if($StopHarnessButton){$StopHarnessButton.IsEnabled=$ds}
-        if($PurgeVramButton){$PurgeVramButton.IsEnabled=($tg -or $ds)}
-    } finally { $script:StatusBusy=$false; Refresh-LiveResources }
+        } else {$RuntimeModel.Text='No model loaded';$RuntimeContext.Text='GGUF backend is online';$RuntimeOffload.Text='Model offloaded';$RuntimeApi.Text='Local API :5100';$RuntimeState.Text='Offloaded';$RuntimeState.Foreground='#A894FF';$RuntimeStateDot.Fill='#8A6DFF'}
+    } else {
+        if($BackendName){$BackendName.Text='Model'};$RuntimeModel.Text=if($ds){'Harness open / model unloaded'}else{'No model loaded'};$RuntimeContext.Text='48k recommended';$RuntimeOffload.Text='GPU priority is the default';$RuntimeApi.Text=if($ds){'Load a model to resume'}else{'Tools connect automatically'};$RuntimeState.Text='Unloaded';$RuntimeState.Foreground='#858596';$RuntimeStateDot.Fill='#4B4B56'
+        if($script:LaunchState -eq 'idle'){Update-BackendSelectionUi}
+    }
+    $metrics=$Snapshot.Metrics
+    if($TokenStats){
+        if($metrics.Available){$TokenStats.Text=('Decoder average: {0:N1} tok/s' -f [double]$metrics.Rate)+"`n"+('Input processed: {0:N0} | Cached: {1:N0}' -f [double]$metrics.Prompt,[double]$metrics.Cached)+"`n"+('Generated: {0:N0} tokens | Active requests: {1:N0}' -f [double]$metrics.Generated,[double]$metrics.Active)}
+        elseif($script:PendingModel -eq 'agentport-fast-qwen3-coder'){$TokenStats.Text='Waiting for token statistics...'}
+    }
+    if($Snapshot.Gpu.Total -gt 0){$VramText.Text=('{0:N1} / {1:N1} GB in use' -f [double]$Snapshot.Gpu.Used,[double]$Snapshot.Gpu.Total);$VramBar.Value=[math]::Min(100,100*[double]$Snapshot.Gpu.Used/[math]::Max(0.1,[double]$Snapshot.Gpu.Total))}
+    if($Snapshot.Ram.Total -gt 0){$RamText.Text=('{0:N1} / {1:N1} GB in use' -f [double]$Snapshot.Ram.Used,[double]$Snapshot.Ram.Total);$RamBar.Value=[math]::Min(100,100*[double]$Snapshot.Ram.Used/[math]::Max(0.1,[double]$Snapshot.Ram.Total))}
+    Update-AgentPortLifecycleControls $tg $ds
+}
+
+function Complete-RuntimeProbeIfReady {
+    if(-not $script:RuntimeProbeOperation){return}
+    if(Test-AgentPortBackgroundOperationTimedOut $script:RuntimeProbeOperation){$operation=$script:RuntimeProbeOperation;$script:RuntimeProbeOperation=$null;Stop-AgentPortBackgroundOperation $operation;return}
+    if(-not (Test-AgentPortBackgroundOperationCompleted $script:RuntimeProbeOperation)){return}
+    $operation=$script:RuntimeProbeOperation;$script:RuntimeProbeOperation=$null
+    try {$result=@(Complete-AgentPortBackgroundOperation $operation)|Where-Object{$_ -and $_.PSObject.Properties.Name -contains 'BackendOnline'}|Select-Object -Last 1;if($result -and [int]$result.StopGeneration -eq [int]$script:StopOperation.Generation){$script:RuntimeSnapshot=$result;Render-RuntimeSnapshot $result}}catch{}
+}
+
+function Refresh-Runtime {
+    # Timer calls only schedule/consume worker snapshots. No HTTP, CIM, GPU or
+    # install command is allowed on the dispatcher thread.
+    Complete-RuntimeProbeIfReady
+    if(-not $script:RuntimeProbeOperation){Start-RuntimeProbeAsync}
 }
 
 
@@ -2883,7 +3414,7 @@ function Save-CurrentProfile {
 function Load-AgentPortProfile($Profile){
     if($null -eq $Profile){return}
     if($Profile.model){
-        for($i=0;$i -lt $script:Models.Count;$i++){ if($script:Models[$i].RelPath -eq [string]$Profile.model){$ModelCombo.SelectedIndex=$i;break} }
+        [void](Select-HomeModel ([string]$Profile.model))
     }
     if($Profile.context){$ContextCombo.SelectedItem=[string]$Profile.context}
     if($Profile.offload){$OffloadCombo.SelectedItem=[string]$Profile.offload}
@@ -2925,10 +3456,14 @@ function Show-ProfilesMenu {
 
     <Style x:Key="ModernButton" TargetType="Button">
       <Setter Property="Foreground" Value="#F3F3F5"/><Setter Property="Background" Value="#0F141A"/><Setter Property="BorderBrush" Value="#282F39"/><Setter Property="BorderThickness" Value="1"/><Setter Property="FontFamily" Value="DM Sans, Segoe UI"/><Setter Property="FontSize" Value="13"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="Cursor" Value="Hand"/><Setter Property="Padding" Value="18,11"/>
-      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="13" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="#151B23"/><Setter TargetName="B" Property="BorderBrush" Value="#343C48"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.78"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="B" Property="Opacity" Value="0.38"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Border x:Name="B" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" CornerRadius="13" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/></Border><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="B" Property="Background" Value="#151B23"/><Setter TargetName="B" Property="BorderBrush" Value="#343C48"/></Trigger><Trigger Property="IsPressed" Value="True"><Setter TargetName="B" Property="Opacity" Value="0.78"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter TargetName="B" Property="Opacity" Value="0.38"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
     </Style>
     <Style x:Key="PrimaryButtonStyle" TargetType="Button" BasedOn="{StaticResource ModernButton}"><Setter Property="Background" Value="{StaticResource PurpleGradient}"/><Setter Property="BorderBrush" Value="#806EFF"/><Setter Property="Foreground" Value="White"/><Setter Property="FontSize" Value="18"/><Setter Property="FontWeight" Value="Medium"/><Setter Property="Padding" Value="20,15"/></Style>
     <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource ModernButton}"><Setter Property="Foreground" Value="#FF9D9D"/><Setter Property="Background" Value="#1A1014"/><Setter Property="BorderBrush" Value="#3A2028"/></Style>
+    <Style x:Key="ModelVisibilityCheck" TargetType="CheckBox">
+      <Setter Property="Foreground" Value="#D8D8DE"/><Setter Property="FontSize" Value="12"/><Setter Property="Cursor" Value="Hand"/><Setter Property="VerticalContentAlignment" Value="Center"/>
+      <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="CheckBox"><StackPanel Orientation="Horizontal"><Grid Width="22" Height="22" Margin="0,0,9,0"><Border x:Name="Box" Background="#0B0F14" BorderBrush="#39414D" BorderThickness="1" CornerRadius="6"/><Path x:Name="Mark" Data="M 5,11 L 9,15 L 17,7" Stroke="White" StrokeThickness="2" StrokeStartLineCap="Round" StrokeEndLineCap="Round" Visibility="Collapsed"/></Grid><ContentPresenter VerticalAlignment="Center"/></StackPanel><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Box" Property="BorderBrush" Value="#806EFF"/></Trigger><Trigger Property="IsChecked" Value="True"><Setter TargetName="Box" Property="Background" Value="#6D52F4"/><Setter TargetName="Box" Property="BorderBrush" Value="#9C8BFF"/><Setter TargetName="Mark" Property="Visibility" Value="Visible"/></Trigger><Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+    </Style>
     <Style x:Key="NavButton" TargetType="Button" BasedOn="{StaticResource ModernButton}">
       <Setter Property="HorizontalContentAlignment" Value="Left"/><Setter Property="Padding" Value="18,13"/><Setter Property="Margin" Value="0,0,0,8"/><Setter Property="Background" Value="Transparent"/><Setter Property="BorderBrush" Value="Transparent"/><Setter Property="FontSize" Value="14"/><Setter Property="Foreground" Value="#B8B8C0"/>
       <Style.Triggers><Trigger Property="Tag" Value="active"><Setter Property="Background" Value="#17152B"/><Setter Property="BorderBrush" Value="#4D3DB4"/><Setter Property="Foreground" Value="#FFFFFF"/></Trigger></Style.Triggers>
@@ -2971,11 +3506,11 @@ function Show-ProfilesMenu {
               <Image x:Name="BrandLogo" Width="156" Height="120" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" SnapsToDevicePixels="True"/>
             </Grid>
             <StackPanel Grid.Row="1">
-              <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2302;" FontSize="20" Width="32"/><TextBlock Text="Home" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x25C7;" FontSize="19" Width="32"/><TextBlock Text="Models" VerticalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="NavHome" Style="{StaticResource NavButton}" Tag="active"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2302;" FontSize="20" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Home" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavModels" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x25C7;" FontSize="19" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Models" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
               <Button x:Name="NavRuntimes" Visibility="Collapsed" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&gt;_" FontFamily="Cascadia Mono, Consolas" FontSize="15" Width="32"/><TextBlock Text="Runtimes" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2261;" FontSize="22" Width="32"/><TextBlock Text="Skills &amp; MCPs" VerticalAlignment="Center"/></StackPanel></Button>
-              <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><StackPanel Orientation="Horizontal"><TextBlock Text="&#x2699;" FontSize="19" Width="32"/><TextBlock Text="Settings" VerticalAlignment="Center"/></StackPanel></Button>
+              <Button x:Name="NavSkills" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2261;" FontSize="22" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Skills &amp; MCPs" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
+              <Button x:Name="NavSettings" Style="{StaticResource NavButton}" Tag="inactive"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="&#x2699;" FontSize="19" HorizontalAlignment="Left" VerticalAlignment="Center"/><TextBlock Grid.Column="1" Text="Settings" Margin="12,0,0,0" VerticalAlignment="Center"/></Grid></Button>
             </StackPanel>
 
             <StackPanel Grid.Row="3">
@@ -2986,7 +3521,7 @@ function Show-ProfilesMenu {
                   <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="8"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness" Foreground="#D6D6DB" FontSize="12"/><TextBlock x:Name="HarnessStatus" Grid.Column="1" Text=":3080" Foreground="#917CFF" FontSize="12"/><Ellipse x:Name="HarnessDot" Grid.Column="3" Width="8" Height="8" Fill="#4B4B56" VerticalAlignment="Center"/><TextBlock x:Name="HarnessOnline" Visibility="Collapsed"/></Grid>
                 </StackPanel>
               </Border>
-<Grid Margin="0,0,0,8"><TextBlock Text="v2.0.1" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
+<Grid Margin="0,0,0,8"><TextBlock x:Name="AppVersionLabel" Foreground="#6D6E78" FontSize="10"/><StackPanel Orientation="Horizontal" HorizontalAlignment="Right"><Ellipse Width="7" Height="7" Fill="#51E57A" Margin="0,0,7,0"/><TextBlock Text="Ready" Foreground="#85858F" FontSize="10"/></StackPanel></Grid>
             </StackPanel>
           </Grid>
         </Border>
@@ -3001,22 +3536,24 @@ function Show-ProfilesMenu {
           <Grid Grid.Row="1">
             <ScrollViewer x:Name="HomePage" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
               <StackPanel>
-                <Border Background="{StaticResource RuntimeGradient}" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="28,16" Margin="0,0,0,10">
-                  <Grid Height="150"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="300"/></Grid.ColumnDefinitions>
-                    <StackPanel><TextBlock Text="Current agent" Foreground="#D4D4D9" FontSize="13"/><TextBlock x:Name="RuntimeModel" Text="Nothing running yet" Foreground="#F8F8F9" FontSize="29" FontWeight="SemiBold" Margin="0,10,0,18" TextTrimming="CharacterEllipsis"/><StackPanel Orientation="Horizontal"><Border Background="#0B0F14" BorderBrush="#282F39" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="0,0,10,0"><TextBlock x:Name="RuntimeContext" Text="48k recommended" Foreground="#D5D5DA" FontSize="11"/></Border><Border Background="#0B0F14" BorderBrush="#282F39" BorderThickness="1" CornerRadius="10" Padding="12,8" Margin="0,0,10,0"><TextBlock x:Name="RuntimeOffload" Text="GPU checked automatically" Foreground="#D5D5DA" FontSize="11"/></Border><Border Background="#0B0F14" BorderBrush="#282F39" BorderThickness="1" CornerRadius="10" Padding="12,8"><TextBlock x:Name="RuntimeApi" Text="Tools connect automatically" Foreground="#D5D5DA" FontSize="11"/></Border></StackPanel></StackPanel>
-<Grid Grid.Column="1"><StackPanel Margin="20,8,0,40"><TextBlock Text="Live performance" Foreground="#D4D4D9" FontSize="15" FontWeight="SemiBold"/><TextBlock x:Name="TokenStats" Text="Speed and token counts appear here while you work." Foreground="#D4D4D9" FontSize="12" TextWrapping="Wrap" Margin="0,10,0,8"/><TextBlock Text="Measured locally. Tool and app time is shown separately by the agent." Foreground="#A0A0AB" FontSize="11" TextWrapping="Wrap"/></StackPanel><Border Background="#0D1712" BorderBrush="#1C3928" BorderThickness="1" CornerRadius="10" Padding="11,7" HorizontalAlignment="Right" VerticalAlignment="Bottom"><StackPanel Orientation="Horizontal"><Ellipse x:Name="RuntimeStateDot" Width="8" Height="8" Fill="#4B4B56" Margin="0,0,8,0"/><TextBlock x:Name="RuntimeState" Text="Stopped" Foreground="#858596" FontSize="11"/></StackPanel></Border></Grid>
+                <Border Background="{StaticResource RuntimeGradient}" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22,12" Margin="0,0,0,8">
+                  <Grid Height="104"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="270"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="Current agent" Foreground="#D4D4D9" FontSize="12"/><TextBlock x:Name="RuntimeModel" Text="Nothing running yet" Foreground="#F8F8F9" FontSize="22" FontWeight="SemiBold" Margin="0,4,0,8" TextTrimming="CharacterEllipsis"/><WrapPanel><Border Background="#0B0F14" BorderBrush="#282F39" BorderThickness="1" CornerRadius="10" Padding="10,6" Margin="0,0,8,5"><TextBlock x:Name="RuntimeContext" Text="48k recommended" Foreground="#D5D5DA" FontSize="10"/></Border><Border Background="#0B0F14" BorderBrush="#282F39" BorderThickness="1" CornerRadius="10" Padding="10,6" Margin="0,0,8,5"><TextBlock x:Name="RuntimeOffload" Text="GPU checked automatically" Foreground="#D5D5DA" FontSize="10"/></Border><Border Background="#0B0F14" BorderBrush="#282F39" BorderThickness="1" CornerRadius="10" Padding="10,6" Margin="0,0,0,5"><TextBlock x:Name="RuntimeApi" Text="Tools connect automatically" Foreground="#D5D5DA" FontSize="10"/></Border></WrapPanel></StackPanel>
+<Grid Grid.Column="1"><StackPanel Margin="18,0,0,28"><TextBlock Text="Live performance" Foreground="#D4D4D9" FontSize="13" FontWeight="SemiBold"/><TextBlock x:Name="TokenStats" Text="Speed and token counts appear here while you work." Foreground="#D4D4D9" FontSize="11" TextWrapping="Wrap" Margin="0,5,0,4"/><TextBlock Text="Measured locally; tool and app time is separate." Foreground="#A0A0AB" FontSize="10" TextWrapping="Wrap"/></StackPanel><Border Background="#0D1712" BorderBrush="#1C3928" BorderThickness="1" CornerRadius="10" Padding="10,6" HorizontalAlignment="Right" VerticalAlignment="Bottom"><StackPanel Orientation="Horizontal"><Ellipse x:Name="RuntimeStateDot" Width="8" Height="8" Fill="#4B4B56" Margin="0,0,8,0"/><TextBlock x:Name="RuntimeState" Text="Stopped" Foreground="#858596" FontSize="11"/></StackPanel></Border></Grid>
                   </Grid>
                 </Border>
 
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="28,20" Margin="0,0,0,12">
+                <Border Background="#10131B" BorderBrush="#3A4260" BorderThickness="1" CornerRadius="18" Padding="22,14" Margin="0,0,0,9"><StackPanel><Grid Margin="0,0,0,9"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Cloud AI through OmniRoute" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Optional online models without using your GPU. Free access depends on provider quotas and availability; AgentPort never silently selects a paid fallback." Foreground="#A7A7B0" FontSize="11" Margin="0,3,16,0" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="1"><Button x:Name="OmniRouteSetupButton" Content="Start / setup" Style="{StaticResource ModernButton}" Padding="13,8"/><Button x:Name="OmniRouteDashboardButton" Content="Providers" Style="{StaticResource ModernButton}" Padding="13,8" Margin="8,0,0,0"/></WrapPanel></Grid><TextBlock x:Name="OmniRouteStatus" Text="Checking cloud gateway..." Foreground="#BDBDC5" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Endpoint key" Foreground="#D8D8DE" FontSize="11" Margin="0,0,0,6"/><PasswordBox x:Name="OmniRouteKeyBox" Height="42" Padding="12,8" Background="#0B0F14" Foreground="#F4F4F6" BorderBrush="#2A3039" ToolTip="Stored encrypted for this Windows user; never written to Harness settings or logs."/></StackPanel><StackPanel Grid.Column="2"><TextBlock Text="Exact model route" Foreground="#D8D8DE" FontSize="11" Margin="0,0,0,6"/><ComboBox x:Name="OmniRouteModelCombo"/></StackPanel></Grid><WrapPanel Margin="0,10,0,0"><Button x:Name="OmniRouteRefreshButton" Content="Refresh models" Style="{StaticResource ModernButton}" Padding="13,8"/><Button x:Name="OmniRouteStartButton" Content="Start in Harness" Style="{StaticResource PrimaryButtonStyle}" FontSize="13" Padding="15,8" Margin="8,0,0,0"/><Button x:Name="OmniRouteStopButton" Content="Stop cloud gateway" Style="{StaticResource ModernButton}" Padding="13,8" Margin="8,0,0,0"/></WrapPanel></StackPanel></Border>
+
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22,14" Margin="0,0,0,9">
                   <StackPanel>
-                    <Grid Margin="0,0,0,16"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Start in one click" Foreground="#F3F3F5" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="Recommended for 16 GB NVIDIA GPUs: Qwen3-Coder, 48k context and the action-first preset." Foreground="#A7A7B0" FontSize="12" Margin="0,5,0,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="HomeRecommendedButton" Visibility="Collapsed" Grid.Column="1" Content="Download &amp; start recommended" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="18,11"/></Grid>
-                    <WrapPanel Margin="0,0,0,14"><Button x:Name="ExistingModelButton" Content="Use an existing GGUF" Style="{StaticResource ModernButton}" Padding="13,7" Margin="0,0,8,0"/><Button x:Name="ToolSetupButton" Content="Connect ComfyUI or Blender" Style="{StaticResource ModernButton}" Padding="13,7" Margin="0,0,8,0"/><Button x:Name="TeamWorkspaceButton" Content="Open working folder" Style="{StaticResource ModernButton}" Padding="13,7"/></WrapPanel>
+                    <Grid Margin="0,0,0,9"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Choose a model" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Select a model, check its context, then start your local agent." Foreground="#A7A7B0" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="HomeRecommendedButton" Visibility="Collapsed" Grid.Column="1" Content="Download &amp; start recommended" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="18,11"/></Grid>
+                    <Expander Header="More setup options" Foreground="#BDBDC5" Margin="0,0,0,8" IsExpanded="False"><WrapPanel Margin="0,8,0,0"><Button x:Name="ExistingModelButton" Visibility="Collapsed" Content="Use an existing GGUF" Style="{StaticResource ModernButton}" Padding="13,7" Margin="0,0,8,0"/><Button x:Name="ToolSetupButton" Content="Connect tools" Style="{StaticResource ModernButton}" Padding="13,7" Margin="0,0,8,0"/><Button x:Name="TeamWorkspaceButton" Content="Open workspace" Style="{StaticResource ModernButton}" Padding="13,7"/></WrapPanel></Expander>
                     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="2*"/><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
-                      <StackPanel><TextBlock Text="Model" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,9"/><ComboBox x:Name="ModelCombo"/><Button x:Name="BrowseModelsButton" Content="Manage models" Style="{StaticResource ModernButton}" HorizontalAlignment="Left" Padding="13,7" Margin="0,9,0,0"/></StackPanel>
+                      <StackPanel><TextBlock Text="Model" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,6"/><ComboBox x:Name="ModelCombo"/><Button x:Name="BrowseModelsButton" Content="Manage models" Style="{StaticResource ModernButton}" HorizontalAlignment="Left" Padding="13,7" Margin="0,6,0,0"/></StackPanel>
                       <StackPanel Grid.Column="2"><TextBlock Text="Context" Foreground="#E8E8EB" FontSize="13" Margin="0,0,0,9"/><ComboBox x:Name="ContextCombo"/><TextBlock Text="48k gives tools and chat more room. Smaller contexts use less VRAM. Enabled MCPs remain available at every context size." Foreground="#898993" FontSize="11" Margin="0,8,0,0" TextWrapping="Wrap"/></StackPanel>
                     </Grid>
-                    <Expander x:Name="AdvancedSettings" Header="Advanced model tuning" Foreground="#BDBDC5" Margin="0,18,0,0" IsExpanded="False">
+                    <Expander x:Name="AdvancedSettings" Header="Advanced model tuning" Foreground="#BDBDC5" Margin="0,10,0,0" IsExpanded="False">
                       <StackPanel Margin="0,14,0,0">
                         <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/><ColumnDefinition Width="18"/><ColumnDefinition/></Grid.ColumnDefinitions>
                           <StackPanel><TextBlock Text="GPU offload" Foreground="#BDBDC5" FontSize="11" Margin="0,0,0,7"/><ComboBox x:Name="OffloadCombo"/></StackPanel>
@@ -3035,36 +3572,51 @@ function Show-ProfilesMenu {
 
                 <Border x:Name="LaunchProgressCard" Visibility="Collapsed" Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="16,13" Margin="0,0,0,14">
                   <StackPanel>
-                    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="LaunchPhaseText" Text="Phase 1 of 7  ·  Preflight" Foreground="#F1F1F4" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="LaunchPercentText" Grid.Column="1" Text="0%" Foreground="#A99BFF" FontSize="11" FontWeight="SemiBold"/></Grid>
+                    <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock x:Name="LaunchPhaseText" Text="Phase 1 of 7  |  Preflight" Foreground="#F1F1F4" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="LaunchPercentText" Grid.Column="1" Text="0%" Foreground="#A99BFF" FontSize="11" FontWeight="SemiBold"/></Grid>
                     <ProgressBar x:Name="LaunchProgress" Maximum="100" Value="0" Height="8" Margin="0,10,0,8"/>
                     <TextBlock x:Name="LaunchDetailText" Text="Checking runtime..." Foreground="#85858F" FontSize="10" TextWrapping="Wrap"/>
                   </StackPanel>
                 </Border>
 
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14">
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="16" Margin="0,0,0,10">
                   <StackPanel>
-                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Computer resources" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Live GPU and memory use, including other open apps." Foreground="#85858F" FontSize="11" Margin="0,4,0,0"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Bottom"><Button x:Name="RuntimeOpenUiButton" Content="Open agent" Style="{StaticResource ModernButton}" Padding="12,7"/><Button x:Name="StopBackendButton" Content="Stop backend" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="StopHarnessButton" Content="Stop Harness" Style="{StaticResource ModernButton}" Padding="12,7" Margin="8,0,0,0"/><Button x:Name="PurgeVramButton" Content="Stop all &amp; free VRAM" Style="{StaticResource DangerButton}" Padding="12,7" Margin="8,0,0,0"/></WrapPanel></Grid>
-                    <Border x:Name="OperationBanner" Background="#11131D" BorderBrush="#3B3560" BorderThickness="1" CornerRadius="12" Padding="14" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions><Ellipse x:Name="OperationDot" Width="9" Height="9" Fill="#70707C" VerticalAlignment="Top" Margin="0,5,11,0"/><StackPanel Grid.Column="1"><TextBlock x:Name="OperationTitle" Text="Runtime controls ready" Foreground="#EEEEF2" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="OperationDetail" Text="Stop the backend, Harness, or both. Every action reports when it has finished." Foreground="#9999A4" FontSize="10" TextWrapping="Wrap" Margin="0,3,12,0"/></StackPanel><ProgressBar x:Name="OperationProgress" Grid.Column="2" Height="5" IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/></Grid></Border>
-                    <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="Reading GPU..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Current total use, including other apps" Foreground="#777781" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live system RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="Reading memory..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating selected model..." Foreground="#85858F" FontSize="10" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Border></Grid>
-                    <TextBlock Text="GPU priority is always used unless you explicitly choose CPU/RAM Only. GGUF files are memory-mapped, so Windows can show system RAM use even when model layers are running on the GPU. Stop controls affect only AgentPort; ComfyUI and Blender remain open." Foreground="#B0B0B9" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
-                    <TextBox x:Name="LogBox" Height="210" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/>
+                    <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Model &amp; Harness" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/><Button x:Name="PurgeVramButton" Grid.Column="1" Content="Stop both &amp; free memory" Style="{StaticResource DangerButton}" Padding="12,8" ToolTip="Stops only AgentPort runtimes. Other GPU apps and your model files are left alone."/></Grid>
+                    <Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Margin="0,0,16,0" VerticalAlignment="Center"><TextBlock Text="Local model" Foreground="#EEEEF2" FontWeight="SemiBold"/><TextBlock x:Name="ModelControlStatus" Text="Checking model..." Foreground="#BDBDC5" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="StopBackendButton" Grid.Column="1" Content="Unload model" Style="{StaticResource ModernButton}" Padding="14,9" ToolTip="Stops the model runtime and its current reply. Harness and model files are kept."/></Grid>
+                    <Border BorderBrush="#2B313B" BorderThickness="0,1,0,0" Padding="0,12,0,0" Margin="0,0,0,16"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel Margin="0,0,16,0" VerticalAlignment="Center"><TextBlock Text="DeepSeek Harness" Foreground="#EEEEF2" FontWeight="SemiBold"/><TextBlock x:Name="HarnessControlStatus" Text="Checking Harness..." Foreground="#BDBDC5" FontSize="11" Margin="0,3,0,0" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="RuntimeOpenUiButton" Content="Open Harness" Style="{StaticResource ModernButton}" Padding="14,9" ToolTip="Opens Harness without restarting your loaded model."/><Button x:Name="StopHarnessButton" Content="Close Harness" Style="{StaticResource ModernButton}" Padding="14,9" Margin="8,0,0,0" ToolTip="Stops the agent service and current task, not the model. Saved chats are kept. A browser tab may remain visible."/></WrapPanel></Grid></Border>
+                    <WrapPanel Margin="0,4,0,5" VerticalAlignment="Center">
+                      <CheckBox x:Name="AutoContinueCheck" Content="Auto-continue cut-off replies" Style="{StaticResource ModelVisibilityCheck}" VerticalAlignment="Center" Margin="0,0,20,0"/>
+                      <TextBlock Text="Limit per request" Foreground="#BDBDC5" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                      <ComboBox x:Name="AutoContinueLimit" Width="82" MinHeight="32" AutomationProperties.Name="Maximum automatic continuations per request"/>
+                    </WrapPanel>
+                    <TextBlock x:Name="AutoContinueStatus" Text="Optional. Resumes output-limit cut-offs only. Stop and permission checks still apply." Foreground="#BDBDC5" FontSize="11" TextWrapping="Wrap" Margin="0,4,0,12"/>
+                    <Border x:Name="OperationBanner" Visibility="Collapsed" Background="#11131D" BorderBrush="#3B3560" BorderThickness="1" CornerRadius="12" Padding="14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="120"/></Grid.ColumnDefinitions><Ellipse x:Name="OperationDot" Width="9" Height="9" Fill="#70707C" VerticalAlignment="Top" Margin="0,5,11,0"/><StackPanel Grid.Column="1"><TextBlock x:Name="OperationTitle" Text="Working..." Foreground="#EEEEF2" FontSize="12" FontWeight="SemiBold"/><TextBlock x:Name="OperationDetail" Text="AgentPort will report when this action finishes." Foreground="#9999A4" FontSize="10" TextWrapping="Wrap" Margin="0,3,12,0"/></StackPanel><ProgressBar x:Name="OperationProgress" Grid.Column="2" Height="5" IsIndeterminate="True" Visibility="Collapsed" VerticalAlignment="Center"/></Grid></Border>
                   </StackPanel>
                 </Border>
+                <Expander Header="Resources and activity" Foreground="#BDBDC5" Margin="0,0,0,14" IsExpanded="True">
+                  <StackPanel Margin="0,12,0,0">
+                    <Grid Margin="0,0,0,14"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="14"/><ColumnDefinition/></Grid.ColumnDefinitions><Border Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live GPU VRAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="VramText" Text="Reading GPU..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="VramBar" Maximum="100"/><TextBlock Text="Current total use, including other apps" Foreground="#777781" FontSize="10" Margin="0,7,0,0"/></StackPanel></Border><Border Grid.Column="2" Background="#0B0F14" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18"><StackPanel><TextBlock Text="Live system RAM" Foreground="#BDBDC4" FontSize="12"/><TextBlock x:Name="RamText" Text="Reading memory..." Foreground="#F4F4F6" FontSize="22" FontWeight="SemiBold" Margin="0,6,0,10"/><ProgressBar x:Name="RamBar" Maximum="100"/><TextBlock x:Name="MemorySummary" Text="Estimating selected model..." Foreground="#85858F" FontSize="10" Margin="0,7,0,0" TextWrapping="Wrap"/></StackPanel></Border></Grid>
+                    <TextBlock Text="GPU priority is used unless you explicitly choose CPU/RAM Only. GGUF files are memory-mapped, so Windows may show system RAM use even when layers run on the GPU. Stop controls affect only AgentPort; ComfyUI and Blender remain open." Foreground="#B0B0B9" FontSize="11" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <Expander Header="Activity log" Foreground="#BDBDC5" IsExpanded="False"><TextBox x:Name="LogBox" Height="210" Margin="0,10,0,0" IsReadOnly="True" Background="#080B10" Foreground="#A8A8B0" BorderBrush="#252C35" FontFamily="Cascadia Mono, Consolas" FontSize="10" VerticalScrollBarVisibility="Auto" TextWrapping="NoWrap"/></Expander>
+                  </StackPanel>
+                </Expander>
 
               </StackPanel>
             </ScrollViewer>
 
+            <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Settings" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Paths, setup checks and optional maintenance for this PC." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Locations" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Models" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="ModelsPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="ModelsPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness workspace" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="HarnessPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="HarnessPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Setup checks" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Review what is installed at a glance. Open Maintenance only when you need to install, update or repair a component." Foreground="#92929B" FontSize="11" Margin="0,5,0,16" TextWrapping="Wrap"/><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="Managed GPU backend" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="ManagedRuntimeDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="ManagedRuntimeFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="ManagedRuntimeDetail" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="Recommended model" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="RecommendedModelDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="RecommendedModelFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="RecommendedModelDetail" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="NInfer (optional)" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="NInferInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="NInferInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="NInferInstallDetail" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/></Grid.ColumnDefinitions><TextBlock Text="MCP connections" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="McpInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="McpInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="McpInstallDetail" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel></Grid><Expander Header="Maintenance" Foreground="#BDBDC5" Margin="0,6,0,0" IsExpanded="False"><StackPanel Margin="0,12,0,0"><TextBlock Text="Install, update or repair runtimes here. Your models and settings are kept when a runtime is repaired." Foreground="#92929B" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen runtime" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="TextGenInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="TextGenInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="TextGenInstallDetail" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="3"><Button x:Name="InstallTextGenButton" Content="Install" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/><Button x:Name="RepairTextGenButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></WrapPanel></Grid><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="DeepSeek Harness" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="HarnessInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="HarnessInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="HarnessInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="3"><Button x:Name="InstallHarnessButton" Content="Install" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/><Button x:Name="HarnessUpdateButtonSettings" Content="Update" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/><Button x:Name="RepairHarnessButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></WrapPanel></Grid></StackPanel></Expander></StackPanel></Border><Expander Header="Removal" Foreground="#FFB3B3" Margin="0,0,0,14" IsExpanded="False"><Border Background="#0D1117" BorderBrush="#33222A" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,0"><StackPanel><TextBlock Text="Remove components" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="These actions are separate and ask for confirmation. Models are preserved unless you choose their own removal action." Foreground="#7F808A" FontSize="11" Margin="0,4,0,14" TextWrapping="Wrap"/><WrapPanel><Button x:Name="UninstallTextGenButton" Content="Remove TextGen" Style="{StaticResource DangerButton}" Margin="0,0,8,8"/><Button x:Name="UninstallRecommendedModelButton" Content="Remove recommended model" Style="{StaticResource DangerButton}" Margin="0,0,8,8"/><Button x:Name="UninstallManagedRuntimeButton" Content="Remove managed GPU backend" Style="{StaticResource DangerButton}" Margin="0,0,8,8"/><Button x:Name="UninstallNInferButton" Content="Remove NInfer" Style="{StaticResource DangerButton}" Margin="0,0,8,8"/><Button x:Name="ResetMcpButton" Content="Reset MCP connections" Style="{StaticResource DangerButton}" Margin="0,0,8,8"/><Button x:Name="UninstallHarnessButton" Content="Remove Harness and portable runtime" Style="{StaticResource DangerButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Border></Expander></StackPanel></ScrollViewer>
             <ScrollViewer x:Name="ModelsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto">
               <StackPanel>
-                <Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="14" Padding="22" Margin="0,0,0,14"><StackPanel><TextBlock Text="Recommended for 16 GB: Qwen3-Coder 30B A3B" Foreground="#EAFBEF" FontSize="19" FontWeight="SemiBold"/><TextBlock Text="12.8 GB download | 48k context | tested with filesystem, ComfyUI and Blender tools | about 100 tok/s on the RTX 4080. Includes a portable Windows CUDA runtime." Foreground="#B3DCC0" TextWrapping="Wrap" Margin="0,7,0,12"/><Button x:Name="TeamModelButton" Content="Download &amp; start recommended" Style="{StaticResource PrimaryButtonStyle}" HorizontalAlignment="Left" Padding="18,10"/></StackPanel></Border>
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18" Margin="0,0,0,14"><TextBlock Text="Existing GGUF files are discovered automatically. They may run well, but AgentPort labels them as unverified until they pass the same creative-tool tests." Foreground="#B7B7C0" FontSize="12" TextWrapping="Wrap"/></Border>
-                <Expander Header="Other experimental model families" Foreground="#D1D1D6" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0"><TextBlock Text="These are available for manual testing, not recommended defaults. Tool quality varies by quantisation and prompt format." Foreground="#B8B8C2" TextWrapping="Wrap" Margin="0,0,0,10"/><WrapPanel><Button x:Name="GemmaModelButton" Content="Browse Gemma" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="GptOssModelButton" Content="Browse GPT-OSS" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Expander>
-                <Expander Header="Advanced: NInfer 27B (RTX 4080, limited VRAM headroom)" Foreground="#D1D1D6" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0"><TextBlock Text="Fast decoding, but the 27B model can fail to fit while ComfyUI is open. This is an optional specialist backend." Foreground="#B8B8C2" TextWrapping="Wrap"/><TextBlock x:Name="ModelsNInferStatus" Text="Checking installation..." Foreground="#F1C66D" Margin="0,6,0,8"/><Button x:Name="ModelsNInferAction" Content="Set up NInfer" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Expander>
-                <Expander Header="Advanced: download another Hugging Face GGUF" Foreground="#D1D1D6" Margin="0,0,0,16">
-                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID." Foreground="#85858F" FontSize="11" Margin="0,4,0,14"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Quant / GGUF file" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose a GGUF file." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="DownloadButton" Content="Download &amp; Install" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11"/><Button x:Name="ImportButton" Content="Import local GGUF" Style="{StaticResource ModernButton}" Margin="10,0,0,0"/></StackPanel></StackPanel></Border>
-                </Expander>
-                <Grid Margin="0,6,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your existing models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Discovered locally. Select Use to make one the next model AgentPort starts." Foreground="#91919B" FontSize="11" Margin="0,3,0,0"/></StackPanel><Button x:Name="RefreshModelsButton" Grid.Column="1" Content="Scan again" Style="{StaticResource ModernButton}" Padding="14,8"/></Grid>
+                <Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="14" Padding="18,16" Margin="0,0,0,14"><StackPanel><TextBlock Text="Recommended on 16 GB: Qwen3-Coder 30B-A3B" Foreground="#EAFBEF" FontSize="18" FontWeight="SemiBold"/><TextBlock Text="IQ3_XXS GGUF | 48k context | previously tested on an RTX 4080. Results vary with the model, settings and hardware, so this is a recommendation rather than a guarantee." Foreground="#B3DCC0" TextWrapping="Wrap" Margin="0,7,0,12"/><Button x:Name="TeamModelButton" Content="Download &amp; start recommended" Style="{StaticResource PrimaryButtonStyle}" HorizontalAlignment="Left" Padding="18,10"/></StackPanel></Border>
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="14" Padding="18" Margin="0,0,0,14"><TextBlock Text="AgentPort discovers GGUF files you already own. They stay available, but performance depends on the model, settings and hardware." Foreground="#B7B7C0" FontSize="12" TextWrapping="Wrap"/></Border>
+                <Grid Margin="0,8,0,12"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Your models" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Choose which discovered models appear on Home. These controls only change the Home list: files stay on your drive and the recommended managed option remains available." Foreground="#A0A0AA" FontSize="11" Margin="0,3,18,0" TextWrapping="Wrap"/><TextBlock x:Name="ModelScanStatus" Text="Ready to scan known local model locations." Foreground="#777788" FontSize="10" Margin="0,5,18,0" TextWrapping="Wrap"/></StackPanel><WrapPanel Grid.Column="1" VerticalAlignment="Center"><Button x:Name="ShowAllModelsButton" Content="Show all" Style="{StaticResource ModernButton}" Padding="12,8" Margin="0,0,8,0"/><Button x:Name="HideAllModelsButton" Content="Untick all" Style="{StaticResource ModernButton}" Padding="12,8" Margin="0,0,8,0"/><Button x:Name="RefreshModelsButton" Content="Scan for models" Style="{StaticResource ModernButton}" Padding="14,8"/></WrapPanel></Grid>
                 <StackPanel x:Name="ModelListPanel"/>
+                <Expander Header="Advanced: import files from this PC" Foreground="#D1D1D6" Margin="0,16,0,16">
+                  <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,0"><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Import a local GGUF" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Choose a model file already on this PC. AgentPort then lets you select its optional mmproj vision or audio helper file." Foreground="#92929B" FontSize="11" Margin="0,5,18,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="ImportButton" Grid.Column="1" Content="Choose model file" Style="{StaticResource ModernButton}" Padding="16,9"/></Grid></Border>
+                </Expander>
+                <Expander x:Name="HfDownloadExpander" Header="Advanced: download another Hugging Face GGUF" Foreground="#D1D1D6" Margin="0,0,0,16">
+                <Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,12,0,14"><StackPanel><TextBlock Text="Install from Hugging Face" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Paste a repository URL or owner/repo ID. AgentPort shows model files and compatible optional helpers separately." Foreground="#85858F" FontSize="11" Margin="0,4,0,14" TextWrapping="Wrap"/><Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="12"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBox x:Name="RepoInput" Grid.Column="0" Height="46" Text="https://huggingface.co/empero-ai/Qwen3.8-27B-Ridge-GGUF"/><Button x:Name="InspectButton" Grid.Column="2" Content="Inspect files" Style="{StaticResource ModernButton}"/></Grid><TextBlock Text="Model / quant GGUF" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoFileCombo"/><TextBlock Text="Optional vision or audio helper (mmproj)" Foreground="#B7B7BF" FontSize="11" Margin="0,15,0,7"/><ComboBox x:Name="RepoHelperCombo"/><TextBlock Text="Leave this on No helper for ordinary text-only models." Foreground="#85858F" FontSize="10" Margin="0,7,0,0"/><ProgressBar x:Name="DownloadProgress" Maximum="100" Margin="0,16,0,0"/><TextBlock x:Name="RepoStatus" Text="Inspect a repository to choose its model and optional helper files." Foreground="#85858F" FontSize="11" Margin="0,8,0,14"/><Button x:Name="DownloadButton" Content="Download &amp; Install selected files" Style="{StaticResource PrimaryButtonStyle}" FontSize="14" Padding="20,11" HorizontalAlignment="Left"/></StackPanel></Border>
+                </Expander>
+                <Expander Header="Advanced: NInfer fast chat (RTX 4080)" Foreground="#D1D1D6" Margin="0,0,0,16"><StackPanel Margin="0,12,0,0"><TextBlock Text="Optional fast-chat backend for an RTX 4080. It uses a smaller context and is separate from the recommended 48k setup." Foreground="#B8B8C2" TextWrapping="Wrap"/><TextBlock x:Name="ModelsNInferStatus" Text="Checking installation..." Foreground="#F1C66D" Margin="0,6,0,8"/><Button x:Name="ModelsNInferAction" Content="Set up NInfer" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Expander>
               </StackPanel>
             </ScrollViewer>
 
@@ -3072,7 +3624,6 @@ function Show-ProfilesMenu {
 
             <ScrollViewer x:Name="SkillsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Skills &amp; MCPs" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Give DeepSeek Harness extra instructions and trusted tools." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0C1711" BorderBrush="#245E38" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="MCP connections" Foreground="#EAFBEF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Connect ComfyUI or Blender, or paste another MCP's configuration. No MCP folder or matching skill is needed." Foreground="#9BC9A8" FontSize="12" Margin="0,6,12,0" TextWrapping="Wrap"/></StackPanel><Button x:Name="McpManagerButton" Grid.Column="1" Content="Manage connections" Style="{StaticResource PrimaryButtonStyle}" Padding="17,10"/></Grid></Border><Border Background="#11101A" BorderBrush="#493A82" BorderThickness="1" CornerRadius="16" Padding="22" Margin="0,0,0,14"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><StackPanel><TextBlock Text="Zura Low Thinking" Foreground="#F3F0FF" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="A faster, action-first Harness preset for Qwen. It limits routine planning and repeated analysis while keeping deliberate Plan mode thorough." Foreground="#B9ADE8" FontSize="12" Margin="0,6,16,0" TextWrapping="Wrap"/><TextBlock x:Name="LowThinkingStatus" Text="Installs as the default for new Harness chats." Foreground="#898993" FontSize="11" Margin="0,6,0,0"/></StackPanel><Button x:Name="InstallLowThinkingButton" Grid.Column="1" Content="Install &amp; make default" Style="{StaticResource PrimaryButtonStyle}" Padding="17,10"/></Grid></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="22" Margin="0,0,0,14"><StackPanel><TextBlock Text="Harness skills" Foreground="#F3F3F5" FontSize="17" FontWeight="SemiBold"/><TextBlock Text="Add a skill folder or ZIP containing skill.md. AgentPort keeps these separate from other agent apps." Foreground="#92929B" FontSize="12" Margin="0,6,0,12" TextWrapping="Wrap"/><TextBlock x:Name="SkillsPathText" Foreground="#9B87FF" FontSize="11" Margin="0,0,0,12" TextWrapping="Wrap"/><WrapPanel><Button x:Name="AddSkillFolderButton" Content="Add folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="ImportSkillZipButton" Content="Import ZIP" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="CreateSkillButton" Content="Create blank skill" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="OpenSkillsButton" Content="Open folder" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/><Button x:Name="RefreshSkillsButton" Content="Refresh" Style="{StaticResource ModernButton}" Margin="0,0,8,8"/></WrapPanel></StackPanel></Border><TextBlock Text="Installed skills" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,4,0,12"/><StackPanel x:Name="SkillsListPanel"/></StackPanel></ScrollViewer>
 
-            <ScrollViewer x:Name="SettingsPage" Visibility="Collapsed" VerticalScrollBarVisibility="Auto"><StackPanel><TextBlock Text="Settings" Foreground="#F6F6F7" FontSize="28" FontWeight="SemiBold"/><TextBlock Text="Paths and maintenance. AgentPort can bootstrap its own local runtimes on a fresh Windows PC." Foreground="#92929B" FontSize="13" Margin="0,4,0,20"/><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Locations" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Models" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="ModelsPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="ModelsPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid Margin="0,0,0,11"><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="TextGenPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="TextGenPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="150"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="Harness workspace" Foreground="#9A9AA4" VerticalAlignment="Center"/><TextBlock x:Name="HarnessPathText" Grid.Column="1" Foreground="#D1D1D6" VerticalAlignment="Center" TextTrimming="CharacterEllipsis"/><Button x:Name="HarnessPathButton" Grid.Column="2" Content="Change" Style="{StaticResource ModernButton}" Padding="13,7"/></Grid></StackPanel></Border><Border Background="#0D1117" BorderBrush="#2B313B" BorderThickness="1" CornerRadius="18" Padding="24" Margin="0,0,0,14"><StackPanel><TextBlock Text="Setup checks" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="NInfer is the dedicated RTX 4080 fast path. TextGen is optional and supports general GGUF models. DeepSeek Harness is the agent interface used by either backend." Foreground="#92929B" FontSize="11" Margin="0,5,0,16" TextWrapping="Wrap"/><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="TextGen" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="TextGenInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="TextGenInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="TextGenInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallTextGenButton" Content="Install TextGen" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="RepairTextGenButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Grid Margin="0,0,0,12"><Grid.ColumnDefinitions><ColumnDefinition Width="170"/><ColumnDefinition Width="Auto"/><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="DeepSeek Harness" Foreground="#D6D6DB" VerticalAlignment="Center"/><Ellipse x:Name="HarnessInstallDot" Grid.Column="1" Width="9" Height="9" Fill="#4B4B56" VerticalAlignment="Center" Margin="0,0,8,0"/><StackPanel Grid.Column="2"><TextBlock x:Name="HarnessInstallFlag" Text="Checking" Foreground="#8A8A94" FontWeight="SemiBold"/><TextBlock x:Name="HarnessInstallDetail" Text="" Foreground="#777788" FontSize="10" TextWrapping="Wrap"/></StackPanel><StackPanel Grid.Column="3" Orientation="Horizontal"><Button x:Name="InstallHarnessButton" Content="Install Harness" Style="{StaticResource ModernButton}" Padding="13,7"/><Button x:Name="HarnessUpdateButtonSettings" Content="Update to latest" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/><Button x:Name="RepairHarnessButton" Content="Repair" Style="{StaticResource ModernButton}" Padding="13,7" Margin="8,0,0,0"/></StackPanel></Grid><Button x:Name="ScanModelsButton" Content="Scan for models from AgentPort, TextGen, Ollama, LM Studio, Unsloth, Hugging Face, Jan and GPT4All" Style="{StaticResource ModernButton}" HorizontalAlignment="Left"/></StackPanel></Border><Border Background="#0D1117" BorderBrush="#33222A" BorderThickness="1" CornerRadius="18" Padding="24"><StackPanel><TextBlock Text="Component removal" Foreground="#F3F3F5" FontSize="16" FontWeight="SemiBold"/><TextBlock Text="Destructive actions are kept separate to prevent accidental clicks." Foreground="#7F808A" FontSize="11" Margin="0,4,0,14"/><StackPanel Orientation="Horizontal"><Button x:Name="UninstallTextGenButton" Content="Uninstall TextGen app files" Style="{StaticResource DangerButton}"/><Button x:Name="UninstallHarnessButton" Content="Uninstall DeepSeek Harness" Style="{StaticResource DangerButton}" Margin="8,0,0,0"/></StackPanel></StackPanel></Border></StackPanel></ScrollViewer>
           </Grid>
         </Grid>
       </Grid>
@@ -3084,6 +3635,13 @@ function Show-ProfilesMenu {
 $reader = New-Object System.Xml.XmlNodeReader $xaml
 Write-Host 'AgentPort: loading window'
 $Window = [System.Windows.Markup.XamlReader]::Load($reader)
+$Window.FindName('AppVersionLabel').Text='v'+$script:AppVersion
+$Window.Add_SourceInitialized({
+    try {
+        $native=New-Object System.Windows.Interop.WindowInteropHelper($Window)
+        [AgentPortShellIdentity]::ApplyWindowIdentity($native.Handle,'ZURAVFX.AgentPort',$script:IconPath)
+    } catch { Write-Host ('AgentPort window identity warning: '+$_.Exception.Message) }
+})
 try {
     $wa = [System.Windows.SystemParameters]::WorkArea
     $Window.MaxHeight = $wa.Height
@@ -3108,8 +3666,11 @@ try {
     }
 } catch {}
 
-$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','GemmaModelButton','GptOssModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names = @('HomeRecommendedButton','ExistingModelButton','ToolSetupButton','TeamModelButton','TeamWorkspaceButton','TokenStats','BackendName','TextGenStatus','HarnessStatus','TextGenDot','HarnessDot','TextGenOnline','HarnessOnline','RuntimeModel','RuntimeContext','RuntimeOffload','RuntimeApi','RuntimeState','RuntimeStateDot','ModelCombo','ContextCombo','OffloadCombo','CacheCombo','SpecCombo','MaxTokensCombo','AdvancedSettings','PrimaryButton','SavedProfilesButton','BrowseModelsButton','RepoInput','InspectButton','RepoFileCombo','RepoHelperCombo','HfDownloadExpander','DownloadProgress','RepoStatus','DownloadButton','ImportButton','ModelListPanel','RefreshModelsButton','ShowAllModelsButton','HideAllModelsButton','ModelScanStatus','ModelsNInferStatus','ModelsNInferAction','VramBar','RamBar','VramText','RamText','MemorySummary','BrandLogo','LogBox','RuntimeOpenUiButton','HarnessUpdateButton','StopBackendButton','StopHarnessButton','PurgeVramButton','OperationBanner','OperationDot','OperationTitle','OperationDetail','OperationProgress','McpManagerButton','InstallLowThinkingButton','LowThinkingStatus','SkillsPathText','OpenSkillsButton','RefreshSkillsButton','SkillsListPanel','ModelsPathText','TextGenPathText','HarnessPathText','ModelsPathButton','TextGenPathButton','HarnessPathButton','UninstallTextGenButton','UninstallHarnessButton','HomePage','ModelsPage','RuntimesPage','SkillsPage','SettingsPage','NavHome','NavModels','NavRuntimes','NavSkills','NavSettings','StatusText','LaunchProgressCard','LaunchPhaseText','LaunchPercentText','LaunchProgress','LaunchDetailText','MinButton','MaxButton','CloseButton','TitleBar','DragArea','TextGenInstallFlag','TextGenInstallDetail','TextGenInstallDot','HarnessInstallFlag','HarnessInstallDetail','HarnessInstallDot','ManagedRuntimeFlag','ManagedRuntimeDetail','ManagedRuntimeDot','RecommendedModelFlag','RecommendedModelDetail','RecommendedModelDot','NInferInstallFlag','NInferInstallDetail','NInferInstallDot','McpInstallFlag','McpInstallDetail','McpInstallDot','UninstallRecommendedModelButton','UninstallManagedRuntimeButton','UninstallNInferButton','ResetMcpButton','InstallTextGenButton','RepairTextGenButton','InstallHarnessButton','HarnessUpdateButtonSettings','RepairHarnessButton','ScanModelsButton','AddSkillFolderButton','ImportSkillZipButton','CreateSkillButton')
+$names+=@('AutoContinueCheck','AutoContinueLimit','AutoContinueStatus')
+$names+=@('OmniRouteSetupButton','OmniRouteDashboardButton','OmniRouteStatus','OmniRouteKeyBox','OmniRouteModelCombo','OmniRouteRefreshButton','OmniRouteStartButton','OmniRouteStopButton')
 foreach($n in $names){ Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script }
+foreach($n in @('ModelControlStatus','HarnessControlStatus')){Set-Variable -Name $n -Value $Window.FindName($n) -Scope Script}
 $script:HeaderArea=$Window.FindName('HeaderArea');$script:PageTitle=$Window.FindName('PageTitle');$script:PageSubtitle=$Window.FindName('PageSubtitle')
 
 # Use the approved AgentPort lockup itself in the sidebar rather than re-typesetting it.
@@ -3139,9 +3700,26 @@ $SpecCombo.SelectedItem=$specSaved; if($SpecCombo.SelectedIndex -lt 0){$SpecComb
 foreach($v in @('1,024','2,048','4,096','8,192','16,384')){[void]$MaxTokensCombo.Items.Add($v)}
 $maxSaved=('{0:N0}' -f [int]$script:Config.max_tokens); $MaxTokensCombo.SelectedItem=$maxSaved; if($MaxTokensCombo.SelectedIndex -lt 0){$MaxTokensCombo.SelectedItem='2,048'}
 
+$autoOptions=Get-AgentPortAutoContinueOptions
+foreach($limit in @(5,10,20,50)){[void]$AutoContinueLimit.Items.Add($limit)}
+if(-not $AutoContinueLimit.Items.Contains([int]$autoOptions.maxContinuations)){[void]$AutoContinueLimit.Items.Add([int]$autoOptions.maxContinuations)}
+$AutoContinueLimit.SelectedItem=[int]$autoOptions.maxContinuations
+$AutoContinueCheck.IsChecked=[bool]$autoOptions.enabled
+function Save-AutoContinueControls {
+    try {
+        Save-AgentPortAutoContinueOptions -Enabled ([bool]$AutoContinueCheck.IsChecked) -Limit ([int]$AutoContinueLimit.SelectedItem)
+        $AutoContinueStatus.Text=if($AutoContinueCheck.IsChecked){'On. Each resume is shown in the chat. Changes apply immediately to Harness started by this version.'}else{'Off. No more automatic continuations will be queued. A reply already running is not cancelled.'}
+    } catch {
+        $AutoContinueStatus.Text='Could not save auto-continue. '+$_.Exception.Message
+        Set-Log $AutoContinueStatus.Text 'error'
+    }
+}
+$AutoContinueCheck.Add_Click({Save-AutoContinueControls})
+$AutoContinueLimit.Add_SelectionChanged({Save-AutoContinueControls})
+
 function Refresh-PathLabels {
     $ModelsPathText.Text=[string]$script:Config.models_root
-    $TextGenPathText.Text=[string]$script:Config.textgen_root
+    if($TextGenPathText){$TextGenPathText.Text=[string]$script:Config.textgen_root}
     $HarnessPathText.Text=[string]$script:Config.harness_root
     $SkillsPathText.Text=[string]$script:Config.harness_skills_root
 }
@@ -3165,9 +3743,14 @@ $NavModels.Add_Click({ Switch-Page 'Models' })
 $NavRuntimes.Add_Click({ Switch-Page 'Runtimes' })
 $NavSkills.Add_Click({ Switch-Page 'Skills' })
 $NavSettings.Add_Click({ Switch-Page 'Settings' })
-$HomeRecommendedButton.Add_Click({for($i=0;$i -lt $script:Models.Count;$i++){if($script:Models[$i].Source -eq 'Team'){$ModelCombo.SelectedIndex=$i;break}};Start-AgentPortTeam})
+$HomeRecommendedButton.Add_Click({[void](Select-HomeModel 'agentport-fast-qwen3-coder');Start-AgentPortTeam})
 $ExistingModelButton.Add_Click({Switch-Page 'Models'})
 $ToolSetupButton.Add_Click({Show-AgentPortMcpManager})
+$OmniRouteSetupButton.Add_Click({Setup-AgentPortOmniRouteFromHome})
+$OmniRouteDashboardButton.Add_Click({try{Start-AgentPortOmniRoute;Open-AgentPortOmniRouteDashboard}catch{Set-OperationFeedback 'Cloud gateway unavailable' $_.Exception.Message 'error'}})
+$OmniRouteRefreshButton.Add_Click({Refresh-AgentPortOmniRouteModelsUi})
+$OmniRouteStartButton.Add_Click({Start-AgentPortOmniRouteFromHome})
+$OmniRouteStopButton.Add_Click({if(Stop-AgentPortOmniRoute){Set-OperationFeedback 'Cloud gateway stopped' 'Harness and local models were left unchanged.' 'ok'}else{Set-OperationFeedback 'Cloud gateway not stopped' 'AgentPort did not own a running OmniRoute process.' 'error'};Refresh-AgentPortOmniRouteUi})
 
 $ModelCombo.Add_SelectionChanged({ Update-MemoryFit; Update-BackendSelectionUi })
 $ContextCombo.Add_SelectionChanged({ Update-MemoryFit })
@@ -3178,7 +3761,7 @@ $SavedProfilesButton.Add_Click({ Show-ProfilesMenu })
 $BrowseModelsButton.Add_Click({ Switch-Page 'Models' })
 $StopBackendButton.Add_Click({ Stop-BackendOnly })
 $StopHarnessButton.Add_Click({ Stop-HarnessFromHome })
-$RuntimeOpenUiButton.Add_Click({ Start-Process 'http://127.0.0.1:3080' })
+$RuntimeOpenUiButton.Add_Click({ Open-HarnessFromHome })
 $PurgeVramButton.Add_Click({ Purge-AgentPortVram })
 $ModelsNInferAction.Add_Click({try {Install-AgentPortNInfer $true}catch{[Windows.MessageBox]::Show($_.Exception.Message,'NInfer setup')|Out-Null}})
 $McpManagerButton.Add_Click({ Show-AgentPortMcpManager })
@@ -3195,49 +3778,72 @@ $InstallLowThinkingButton.Add_Click({
 })
 
 $InspectButton.Add_Click({ Inspect-HfRepo })
-$GemmaModelButton.Add_Click({$RepoInput.Text='unsloth/gemma-4-E4B-it-GGUF';Inspect-HfRepo})
-$GptOssModelButton.Add_Click({$RepoInput.Text='unsloth/gpt-oss-20b-GGUF';Inspect-HfRepo})
-$TeamModelButton.Add_Click({for($i=0;$i -lt $script:Models.Count;$i++){if($script:Models[$i].Source -eq 'Team'){$ModelCombo.SelectedIndex=$i;break}};Switch-Page 'Home';Start-AgentPortTeam})
+$TeamModelButton.Add_Click({[void](Select-HomeModel 'agentport-fast-qwen3-coder');Switch-Page 'Home';Start-AgentPortTeam})
 $TeamWorkspaceButton.Add_Click({$path=[string]$script:Config.team_workspace;New-Item -ItemType Directory -Force -Path $path | Out-Null;Start-Process explorer.exe ('"'+$path+'"')})
 $DownloadButton.Add_Click({ Start-HfDownload })
 $ImportButton.Add_Click({ Import-LocalGguf })
-$RefreshModelsButton.Add_Click({ Refresh-Models; Set-Log 'Model list refreshed.' })
+$RefreshModelsButton.Add_Click({ Scan-Models })
+if($ShowAllModelsButton){$ShowAllModelsButton.Add_Click({ Set-ModelVisibilityAll $true })}
+if($HideAllModelsButton){$HideAllModelsButton.Add_Click({ Set-ModelVisibilityAll $false })}
 $RefreshSkillsButton.Add_Click({ Refresh-SkillsPanel; Set-Log 'Skills list refreshed.' })
 if($AddSkillFolderButton){ $AddSkillFolderButton.Add_Click({ Add-SkillFolder }) }
 if($ImportSkillZipButton){ $ImportSkillZipButton.Add_Click({ Import-SkillZip }) }
 if($CreateSkillButton){ $CreateSkillButton.Add_Click({ Create-BlankSkill }) }
 
 $ModelsPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.models_root); if($p){$script:Config.models_root=$p;Save-Config;Refresh-PathLabels;Refresh-Models;Set-Log 'Models folder updated.' 'ok'} })
-$TextGenPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.textgen_root); if($p){$script:Config.textgen_root=$p;Save-Config;Refresh-PathLabels;Set-Log 'TextGen location updated.' 'ok'} })
+if($TextGenPathButton){$TextGenPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.textgen_root); if($p){$script:Config.textgen_root=$p;Save-Config;Refresh-PathLabels} })}
 $HarnessPathButton.Add_Click({ $p=Choose-Folder ([string]$script:Config.harness_root); if($p){$script:Config.harness_root=$p;Save-Config;Refresh-PathLabels;Set-Log 'Harness location updated.' 'ok'} })
 $OpenSkillsButton.Add_Click({ $p=[string]$script:Config.harness_skills_root; if(-not(Test-Path $p)){New-Item -ItemType Directory -Force -Path $p|Out-Null}; Start-Process explorer.exe $p })
-$UninstallTextGenButton.Add_Click({
-    $root=[string]$script:Config.textgen_root; $ans=[System.Windows.MessageBox]::Show("Remove TextGen application files from:`n`n$root`n`nThe user_data folder is preserved.",'Uninstall TextGen',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
-    if($ans -eq [System.Windows.MessageBoxResult]::Yes){ Kill-Stack; Get-ChildItem -LiteralPath $root -Force -ErrorAction SilentlyContinue | Where-Object {$_.Name -ne 'user_data'} | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue; Set-Log 'TextGen application files removed.' 'ok' }
-})
 if($InstallTextGenButton){ $InstallTextGenButton.Add_Click({ Start-TextGenInstallOnly $false }) }
 if($RepairTextGenButton){ $RepairTextGenButton.Add_Click({ Start-TextGenInstallOnly $true }) }
 if($InstallHarnessButton){ $InstallHarnessButton.Add_Click({ Install-DeepSeekHarness $false }) }
 if($HarnessUpdateButtonSettings){ $HarnessUpdateButtonSettings.Add_Click({ Update-DeepSeekHarness }) }
 if($RepairHarnessButton){ $RepairHarnessButton.Add_Click({ Install-DeepSeekHarness $true }) }
 if($ScanModelsButton){ $ScanModelsButton.Add_Click({ Scan-Models }) }
+$UninstallRecommendedModelButton.Add_Click({
+    $path=Join-Path $script:AppDataDir 'models\Qwen3-Coder-30B-A3B-Instruct-UD-IQ3_XXS.gguf'
+    $ans=[Windows.MessageBox]::Show("Remove the managed recommended model?`n`n$path",'Remove recommended model',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Warning)
+    if($ans -eq [Windows.MessageBoxResult]::Yes){Kill-Stack;Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue;Refresh-Models;Refresh-InstallStatus;Set-Log 'Recommended model removed.' 'ok'}
+})
+$UninstallManagedRuntimeButton.Add_Click({
+    $path=Join-Path $script:AppDataDir 'llama-b10809'
+    $ans=[Windows.MessageBox]::Show("Remove the managed CUDA backend?`n`nModels are preserved.",'Remove GPU backend',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Warning)
+    if($ans -eq [Windows.MessageBoxResult]::Yes){Kill-Stack;Remove-Item -LiteralPath $path -Recurse -Force -ErrorAction SilentlyContinue;Refresh-InstallStatus;Set-Log 'Managed GPU backend removed. Models were preserved.' 'ok'}
+})
+$UninstallNInferButton.Add_Click({
+    $ans=[Windows.MessageBox]::Show('Remove AgentPort NInfer, its source build and converted model from Ubuntu-24.04?','Remove NInfer',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Warning)
+    if($ans -eq [Windows.MessageBoxResult]::Yes){
+        Kill-Stack;$distro=Get-AgentPortNInferDistro;$home=((& wsl.exe -d $distro --exec printenv HOME)-join '').Trim()
+        if($home -match '^/[A-Za-z0-9._/-]+$'){& wsl.exe -d $distro --exec rm -rf "$home/.agentport/ninfer-src" "$home/.agentport/models/qwen3_8_27b_minq4.ninfer"}
+        Refresh-Models;Refresh-NInferControls;Refresh-InstallStatus;Set-Log 'NInfer build and converted model removed.' 'ok'
+    }
+})
+$ResetMcpButton.Add_Click({
+    $path=Join-Path $script:ConfigDir 'agentport-mcp.json'
+    $ans=[Windows.MessageBox]::Show('Remove all MCP connections managed by AgentPort? You can add them again from Skills & MCPs.','Reset MCP connections',[Windows.MessageBoxButton]::YesNo,[Windows.MessageBoxImage]::Warning)
+    if($ans -eq [Windows.MessageBoxResult]::Yes){Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue;Refresh-InstallStatus;Set-Log 'AgentPort MCP connections reset.' 'ok'}
+})
 $UninstallHarnessButton.Add_Click({
     $root=[string]$script:Config.harness_root; $ans=[System.Windows.MessageBox]::Show("Permanently remove DeepSeek Harness from:`n`n$root ?",'Uninstall Harness',[System.Windows.MessageBoxButton]::YesNo,[System.Windows.MessageBoxImage]::Warning)
-    if($ans -eq [System.Windows.MessageBoxResult]::Yes){ Kill-Stack; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue; Set-Log 'DeepSeek Harness removed.' 'ok' }
+    if($ans -eq [System.Windows.MessageBoxResult]::Yes){ Kill-Stack; Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue; Remove-Item -LiteralPath $script:PortableNodeDir,$script:NpmCacheDir -Recurse -Force -ErrorAction SilentlyContinue; Refresh-InstallStatus; Set-Log 'Harness workspace, portable Node and package cache removed.' 'ok' }
 })
 
 $timer = New-Object System.Windows.Threading.DispatcherTimer
 $timer.Interval = [TimeSpan]::FromSeconds(2)
-$timer.Add_Tick({ Poll-Launch; Poll-Download; Refresh-Runtime })
+$timer.Add_Tick({ Complete-ModelScanIfReady; Complete-AgentPortStopOperationIfReady; Poll-Launch; Poll-Download; Poll-OperationFeedback; Refresh-Runtime })
 $timer.Start()
 
 Write-Host 'AgentPort: scanning models'
 Ensure-AgentPortRuntimeDirs
+Load-ModelCatalogueCache
 Refresh-Models
 Refresh-NInferControls
 Switch-Page 'Home'
 Update-BackendSelectionUi
 Refresh-Runtime
+Refresh-AgentPortOmniRouteUi
+if($ModelScanStatus){$ModelScanStatus.Text='Discovering local models in the background. The catalogue above is cached and may be stale.';$ModelScanStatus.Foreground='#B9ADE8'}
+try { Start-ModelScanAsync | Out-Null } catch { if($ModelScanStatus){$ModelScanStatus.Text='Showing cached models. Scan could not start.'} }
 Set-Log 'AgentPort is ready. Choose the recommended setup or use an existing GGUF.' 'ok'
 $Window.Add_Closed({if(-not $SmokeTest){Kill-Stack}})
 Write-Host 'AgentPort: showing window'
@@ -3245,13 +3851,83 @@ if($SmokeTest){
     $Window.Add_ContentRendered({
         Write-Host ('AgentPort window rendered; visible='+$Window.IsVisible+'; NInfer choices='+@($script:Models | Where-Object {$_.Source -eq 'NInfer'}).Count+'; primary='+$PrimaryButton.Content+'; advancedExpanded='+$AdvancedSettings.IsExpanded)
         Save-AgentPortPreview $Window 'home'
-        Switch-Page 'Models'; Save-AgentPortPreview $Window 'models'
-        Switch-Page 'Skills'; Save-AgentPortPreview $Window 'skills'
-        Switch-Page 'Settings'; Save-AgentPortPreview $Window 'settings'
-        Switch-Page 'Home'; $Window.Width=$Window.MinWidth; $Window.Height=$Window.MinHeight; Save-AgentPortPreview $Window 'home-min'
-        Show-AgentPortMcpManager -SmokeTest
-        $timer.Stop()
-        $Window.Close()
+        Switch-Page 'Models'
+        Scan-Models {
+            Save-AgentPortPreview $Window 'models-scanned'
+            Save-AgentPortPreview $Window 'models'
+            $HfDownloadExpander.IsExpanded=$true; $HfDownloadExpander.BringIntoView(); Save-AgentPortPreview $Window 'models-hf'
+            Switch-Page 'Skills'; Save-AgentPortPreview $Window 'skills'
+            Switch-Page 'Settings'; Save-AgentPortPreview $Window 'settings'
+            Switch-Page 'Home'; $Window.Width=$Window.MinWidth; $Window.Height=$Window.MinHeight; Save-AgentPortPreview $Window 'home-min'
+            Show-AgentPortMcpManager -SmokeTest
+            $timer.Stop()
+            $Window.Close()
+        }
+    })
+}
+if($IntegrationCurrentModel){
+    $Window.Add_ContentRendered({
+        Start-UnifiedStack
+        $script:IntegrationStage='initial';$script:IntegrationTickBusy=$false
+        $script:IntegrationDeadline=(Get-Date).AddMinutes(10)
+        $script:IntegrationCheck=[Windows.Threading.DispatcherTimer]::new()
+        $script:IntegrationCheck.Interval=[TimeSpan]::FromSeconds(2)
+        $script:IntegrationCheck.Add_Tick({
+            if($script:IntegrationTickBusy){return};$script:IntegrationTickBusy=$true
+            try {
+                if((Get-Date) -gt $script:IntegrationDeadline){throw ('Current-model lifecycle integration timed out at '+$script:IntegrationStage)}
+                if($script:StopOperation.Active){return}
+                if($script:IntegrationStage -eq 'closing-harness'){
+                    if(Test-Port 3080){throw ('Close Harness failed: '+$OperationDetail.Text)}
+                    if(-not (Test-AgentPortProcessIdentity $script:IntegrationModelOwner)){throw 'Closing Harness interrupted the loaded model.'}
+                    Write-Host 'Lifecycle PASS: Close Harness stopped port 3080; model PID and creation time unchanged.'
+                    $script:IntegrationStage='reopening-harness'
+                    $RuntimeOpenUiButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    return
+                }
+                if($script:IntegrationStage -eq 'unloading-model'){
+                    if(Test-Port $script:BackendPort){throw ('Unload model failed: '+$OperationDetail.Text)}
+                    if(-not (Test-Port 3080) -or -not (Test-AgentPortProcessIdentity $script:IntegrationHarnessOwner)){throw 'Unloading the model interrupted Harness.'}
+                    Write-Host 'Lifecycle PASS: Unload model closed the backend; Harness PID and creation time unchanged.'
+                    $script:IntegrationStage='reloading-model';Start-UnifiedStack;return
+                }
+                if($script:IntegrationStage -eq 'stopping-both'){
+                    if((Test-Port $script:BackendPort) -or (Test-Port 3080)){throw ('Stop both failed: '+$OperationDetail.Text)}
+                    Write-Host 'Current-model lifecycle integration PASS: real Home buttons; independent close/unload; reopen and reload; Harness prompts; stop both.'
+                    $script:IntegrationCheck.Stop();$Window.Close();return
+                }
+                if($script:LaunchState -eq 'idle' -and $script:LaunchPhase -eq 7 -and (Test-Port 3080) -and (Test-Port $script:BackendPort)){
+                    $url=Get-HarnessStartupUrl
+                    if(-not $url){return}
+                    $response=Invoke-WebRequest $url -UseBasicParsing -TimeoutSec 5
+                    if($response.StatusCode -ne 200){throw 'Harness page did not return HTTP 200.'}
+                    $body=@{model=$script:PendingModel;messages=@(@{role='user';content='Reply with only: READY'});max_tokens=16;stream=$false} | ConvertTo-Json -Depth 5
+                    $completion=Invoke-RestMethod ("http://127.0.0.1:$script:BackendPort/v1/chat/completions") -Method Post -Headers @{Authorization='Bearer local-textgen'} -ContentType 'application/json' -Body $body -TimeoutSec 90
+                    if(-not $completion.choices[0].message.content){throw 'Selected model returned no completion.'}
+                    & (Join-Path $PSScriptRoot 'ninfer-4080\Test-AgentPortHarnessPrompt.ps1') -StartupUrl $url -ExpectedModel $script:PendingModel | ForEach-Object {Write-Host $_}
+                    Write-Host ('Current-model prompt PASS ('+$script:IntegrationStage+'): '+[IO.Path]::GetFileName($script:PendingModel)+'; Harness HTTP 200; backend completion: '+$completion.choices[0].message.content)
+                    if($script:IntegrationStage -eq 'initial'){
+                        $script:IntegrationModelOwner=$script:TextGenOwnership
+                        $script:IntegrationStage='closing-harness'
+                        $StopHarnessButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    } elseif($script:IntegrationStage -eq 'reopening-harness'){
+                        if(-not (Test-AgentPortProcessIdentity $script:IntegrationModelOwner)){throw 'Opening Harness restarted the model.'}
+                        $listener=netstat.exe -ano -p TCP | ForEach-Object {if($_ -match '^\s*TCP\s+\S+:3080\s+\S+\s+LISTENING\s+(\d+)') {[int]$Matches[1]}} | Select-Object -First 1
+                        $script:IntegrationHarnessOwner=Get-AgentPortProcessRecord $listener
+                        $script:IntegrationStage='unloading-model'
+                        $StopBackendButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    } else {
+                        if(-not (Test-AgentPortProcessIdentity $script:IntegrationHarnessOwner)){throw 'Reloading the same model restarted Harness.'}
+                        $script:IntegrationStage='stopping-both'
+                        $PurgeVramButton.RaiseEvent([Windows.RoutedEventArgs]::new([Windows.Controls.Button]::ClickEvent))
+                    }
+                }
+            } catch {
+                Write-Host ('Current-model integration FAIL: '+$_.Exception.Message+' | '+$_.ScriptStackTrace)
+                $script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close()
+            } finally {$script:IntegrationTickBusy=$false}
+        })
+        $script:IntegrationCheck.Start()
     })
 }
 if($IntegrationTest){
@@ -3262,12 +3938,12 @@ if($IntegrationTest){
         $script:IntegrationCheck=[Windows.Threading.DispatcherTimer]::new()
         $script:IntegrationCheck.Interval=[TimeSpan]::FromSeconds(2)
         $script:IntegrationCheck.Add_Tick({
-            if((Test-Port 5100) -and (Test-Port 3080) -and (Get-LoadedModel) -eq 'agentport-fast-qwen3-coder'){
+            if((Test-Port $script:BackendPort) -and (Test-Port 3080) -and (Get-LoadedModel) -eq 'agentport-fast-qwen3-coder'){
                 if($script:IntegrationStage -ne 'restarted'){
                     Write-Host 'AgentPort integration ready: Team model + Harness; verifying clean stop and restart'
                     Kill-Stack
                     Start-Sleep -Milliseconds 750
-                    if((Test-Port 5100) -or (Test-Port 3080)){Write-Host ('AgentPort integration failed: stop stack left an occupied port (5100='+[bool](Test-Port 5100)+', 3080='+[bool](Test-Port 3080)+')');$script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close();return}
+                    if((Test-Port $script:BackendPort) -or (Test-Port 3080)){Write-Host ('AgentPort integration failed: stop stack left an occupied port (5100='+[bool](Test-Port $script:BackendPort)+', 3080='+[bool](Test-Port 3080)+')');$script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close();return}
                     $script:IntegrationStage='restarted'
                     Start-AgentPortTeam
                     if($script:LaunchState -ne 'wait_harness'){Write-Host 'AgentPort integration restart failed before Harness launch';$script:IntegrationFailed=$true;$script:IntegrationCheck.Stop();$Window.Close()}
@@ -3281,7 +3957,7 @@ if($IntegrationTest){
     })
 }
 $Window.Add_ContentRendered({
-    if(-not $SmokeTest -and -not $IntegrationTest){
+    if(-not $SmokeTest -and -not $IntegrationTest -and -not $IntegrationCurrentModel){
         $Window.WindowState='Normal'
         $Window.Topmost=$true
         [void]$Window.Activate()
@@ -3290,4 +3966,4 @@ $Window.Add_ContentRendered({
     }
 })
 [void]$Window.ShowDialog()
-if($IntegrationTest -and $script:IntegrationFailed){exit 1}
+if(($IntegrationTest -or $IntegrationCurrentModel) -and $script:IntegrationFailed){exit 1}

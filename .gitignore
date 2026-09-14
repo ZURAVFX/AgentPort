@@ -1,4 +1,7 @@
+ninfer-4080/results/
 *.exe
 __pycache__/
 *.pyc
 .DS_Store
+.remote-audit/
+outputs/

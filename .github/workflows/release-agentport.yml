@@ -1,0 +1,75 @@
+name: Build AgentPort release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24.x'
+      - name: Check Windows PowerShell startup and Home buttons
+        shell: powershell
+        run: |
+          & .\src\ninfer-4080\Test-AgentPortLifecycleUi.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortStartupCancellation.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortHarnessEnvironment.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortOmniRouteSettings.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .\src\ninfer-4080\Test-AgentPortOmniRoute.ps1
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Build executable
+        shell: pwsh
+        run: |
+          go -C src build -trimpath -ldflags '-s -w -H=windowsgui' -o ../AgentPort.exe .
+      - name: Sign with Microsoft Artifact Signing when configured
+        if: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT != '' }}
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Apply Microsoft Artifact Signing certificate
+        if: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT != '' }}
+        uses: azure/artifact-signing-action@v1
+        with:
+          endpoint: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT }}
+          trusted-signing-account-name: ${{ secrets.AZURE_TRUSTED_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ secrets.AZURE_TRUSTED_SIGNING_PROFILE }}
+          files: ${{ github.workspace }}\AgentPort.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+      - name: Verify release signature
+        shell: pwsh
+        run: |
+          $signature = Get-AuthenticodeSignature AgentPort.exe
+          if ($env:AZURE_SIGNING_ENABLED -eq 'true' -and $signature.Status -ne 'Valid') {
+            throw "Artifact Signing was configured but the EXE is not validly signed: $($signature.StatusMessage)"
+          }
+          if ($signature.Status -eq 'NotSigned') {
+            Write-Warning 'Release is unsigned. Configure Microsoft Artifact Signing before public distribution.'
+          }
+        env:
+          AZURE_SIGNING_ENABLED: ${{ vars.AZURE_TRUSTED_SIGNING_ENDPOINT != '' && 'true' || 'false' }}
+      - name: Publish GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: |
+          # Signing changes the bytes: hash the final artifact the updater downloads.
+          $hash = (Get-FileHash AgentPort.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  AgentPort.exe" | Set-Content -NoNewline -Encoding ascii AgentPort.exe.sha256
+          gh release create $env:GITHUB_REF_NAME AgentPort.exe AgentPort.exe.sha256 --repo $env:GITHUB_REPOSITORY --generate-notes

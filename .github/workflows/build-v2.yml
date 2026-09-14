@@ -47,7 +47,7 @@ jobs:
         run: python -m py_compile ninfer-4080/mcp-check.py ninfer-4080/mcp-tools.py
 
       - name: Build Windows executable
-        run: go build -ldflags "-H=windowsgui" -o AgentPort.exe main.go
+        run: go build -trimpath -ldflags "-s -w -H=windowsgui" -o AgentPort.exe .
 
       - uses: actions/upload-artifact@v4
         with:
