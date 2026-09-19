@@ -32,8 +32,8 @@ Copy and send this message to your coding agent:
 - Optional nInfer runtime for compatible RTX 4080 workflows
 - ComfyUI and Blender MCP setup
 
-Other detected harness integrations are labelled beta until their complete
-workflows have been tested.
+The supported integrations in this release are Codex Desktop and DeepSeek
+Harness. Other integrations are not advertised until they are ready.
 
 ## Local runtime updates
 
