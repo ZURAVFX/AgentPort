@@ -1,28 +1,34 @@
-# AgentPort 4.0.1
+# AgentPort 4.0.2
 
-AgentPort 4.0.1 is a naming and packaging cleanup on top of the v4 rebuild.
-There are no behavioural changes to routing, providers, or local model
-handling.
+AgentPort 4.0.2 makes an existing installation of the router this project was
+forked from migratable. That installation writes the same three Codex blocks
+under its own marker names and keeps its merged model catalog in
+`<CODEX_HOME>/codex-router`. Those blocks and that catalog read as user-owned,
+so every managed write refused and Codex could not be configured at all.
+
+If you hit "the existing Codex TOML configuration cannot be safely edited" or a
+refusal naming a catalog path, this is the release that fixes it.
 
 ## What changed
 
-- Every product-facing trace of the upstream project name is gone. The Control
-  Centre service label, the Managed Codex and caller-key error messages, the
-  Gemini and Claude transport refusals, the install summary, the Hermes publish
-  hint, the Homebrew readiness check, and the GitHub issue templates now read
-  AgentPort.
-- Documentation copy repaired. Several strings still described AgentPort as
-  "a local agentport" after the v4 rename sweep, and the docs landing page
-  header and footer still read CODEX ROUTER. Both now read correctly.
-- Stale pre-rebuild Homebrew formula removed. `packaging/homebrew/agentport.rb`
-  still pointed at v0.4.0-beta.2 and carried a "NOT YET INSTALLABLE" header.
-  `Formula/agentport.rb` is the only formula the release workflow generates, so
-  the dead duplicate is gone.
-- Version bumped to 4.0.1 across `package.json`, the Control Centre package,
-  and both lockfiles.
-
-The upstream MIT attribution in `LICENSE` and `NOTICE.md` is unchanged. The
-licence requires that notice to be kept.
+- The predecessor's three Codex blocks can now be taken over. A takeover
+  removes them exactly as it removes this project's own older layouts, then
+  writes AgentPort's blocks in their place. Content outside those blocks is
+  preserved untouched.
+- The guard is unchanged. A catalog outside every managed marker block is still
+  refused, and a taken-over configuration disables back to your own content
+  with no managed keys left behind.
+- That installation is now a recognized migration target. Detection previously
+  reported its catalog as somebody else's router, which left no way forward. It
+  is reported by name, so guided setup offers the snapshot-and-migrate step and
+  the doctor names `./bin/doctor --fix --migrate-known`.
+- Escaped Windows catalog paths now detect. Detection compared raw config text
+  against a native path, but a predecessor writes its path as a TOML basic
+  string, so on Windows every separator arrives escaped and the installation
+  went unnoticed.
+- Provider credentials in `<CODEX_HOME>/codex-router` are adopted. Its
+  credential filenames are the same ones this tree uses, so an existing key,
+  including an opencode Go key, is found without being entered again.
 
 ## What is in the 4.0 rebuild
 
@@ -37,7 +43,6 @@ licence requires that notice to be kept.
   file, with optional mmproj helper support for vision-capable models.
 - Local model start, stop, and status controls, with Codex picker publication
   for imported models.
-- Local page controls for the runtime card and the GGUF import flow.
 - Existing Ollama, LM Studio, provider curation, harness, tray, browser panel,
   update, and rollback surfaces retained.
 
@@ -48,7 +53,7 @@ Download one of the release archives, verify its SHA-256, and unpack it.
 Windows PowerShell:
 
 ```powershell
-Expand-Archive .\AgentPort-v4.0.1-source.zip -DestinationPath .\agentport
+Expand-Archive .\AgentPort-v4.0.2-source.zip -DestinationPath .\agentport
 cd .\agentport
 .\install.ps1 -Target codex -Guided -WithTray
 ```
@@ -56,31 +61,34 @@ cd .\agentport
 macOS or Linux:
 
 ```sh
-tar -xzf agentport-4.0.1.tar.gz
-cd agentport-4.0.1
+tar -xzf agentport-4.0.2.tar.gz
+cd agentport-4.0.2
 ./install.sh --target codex --guided --with-tray
 ```
 
-Follow the prompts for the providers you want. Credentials are entered through
-local prompts. After installation, fully quit and reopen Codex before choosing
-an AgentPort model.
-
-You can also paste the installation message from the repository README into a
-Codex task and let your coding agent handle the process.
+Guided setup detects a recognized earlier installation and asks before
+snapshotting and migrating it. For a non-interactive run, pass
+`--migrate-known`. Follow the prompts for the providers you want. Credentials
+are entered through local prompts. After installation, fully quit and reopen
+Codex before choosing an AgentPort model.
 
 ## Checksums
 
-agentport-4.0.1.tar.gz (15,084,552 bytes):
-`0b5f7240b82217549dcaa370485f125924c999cfc5dae427260b6d9705400108`
+agentport-4.0.2.tar.gz (15,088,603 bytes):
+`d75743a1ebf3df5663cfe96374e90c5db7b468afe7987d1aaa47101413a27960`
 
-AgentPort-v4.0.1-source.zip (15,761,014 bytes):
-`c195ae4414e825a061b0a607ba4ceeeade947936555a1c86f1e7505c8c6e7a3c`
+AgentPort-v4.0.2-source.zip (15,765,447 bytes):
+`7d39e7821aa1fd012a2ebcbe253a3f937fa7dcec1d5ab0b355dbdf59528ab334`
 
 ## Verification
 
-The full automated test gate is green for this release: 4,357 tests, 4,224
-passing with no failures and 133 skipped, covering the router, providers,
-harness clients, NInfer runtime, GGUF import, local model lifecycle, Control
-Centre build, model switching, and the wider regression suite. Live end to end
-verification on a Windows RTX 4080 is still recommended before relying on this
-release for day to day work.
+Four regression tests were added: a takeover that preserves operator content, a
+disable that returns to it, a guard proving only the markers authorize a
+replacement, and a detection test for the predecessor installation. The full
+automated test gate is green: 4,361 tests, 4,228 passing with no failures and
+133 skipped. The takeover was also exercised against a copy of a real Codex
+configuration carrying all three predecessor blocks, including its escaped
+Windows catalog path.
+
+Live end to end verification on a Windows RTX 4080 is still recommended before
+relying on this release for day to day work.
