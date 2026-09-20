@@ -1,53 +1,73 @@
 # AgentPort
 
-AgentPort connects local and external AI models to Codex Desktop and DeepSeek
-Harness on Windows. It keeps Codex's built-in GPT models and account login
-native while adding AgentPort models to the same model picker.
+AgentPort is a minimal local router for Codex Desktop and DeepSeek Harness. It
+keeps your GPT models in Codex while adding your own providers in the same
+chat: opencode Go, DeepSeek, Kimi, Grok, GLM, and the other providers you
+choose. Local GGUF models run on your own Windows GPU through the managed
+NInfer llama.cpp runtime, with optional mmproj helper files for vision models.
+
+All provider credentials stay on your computer.
 
 ## Install
 
-1. [Download AgentPort.exe from the latest release](https://github.com/ZURAVFX/AgentPort/releases/latest).
-2. Download `AgentPort.exe.sha256` from the same release if you want to verify
-   the file manually.
-3. Double-click `AgentPort.exe`.
+The latest release contains the source archives and their SHA-256 checksums:
 
-AgentPort is portable. There is no source checkout, package manager or manual
-configuration to install.
+- `agentport-4.0.0.tar.gz` and `AgentPort-v4.0.0-source.zip`
+- `agentport-4.0.0.tar.gz.sha256` and `AgentPort-v4.0.0-source.zip.sha256`
 
-### Ask your coding agent to install it
+Download an archive, verify its checksum, and unpack it. Then run the installer
+from that folder.
 
-Copy and send this message to your coding agent:
+Windows PowerShell:
 
-> Download the latest AgentPort.exe and AgentPort.exe.sha256 from
-> https://github.com/ZURAVFX/AgentPort/releases/latest, verify the SHA-256,
-> save the verified executable in a new AgentPort folder under my Downloads
-> folder, run it once, and tell me when the AgentPort control centre opens.
-> Do not disable or bypass Windows security protections.
+```powershell
+Expand-Archive .\AgentPort-v4.0.0-source.zip -DestinationPath .\agentport
+cd .\agentport
+.\install.ps1 -Target codex -Guided -WithTray
+```
 
-## Main integrations
+macOS or Linux:
 
-- Codex Desktop, including its existing built-in GPT models
-- DeepSeek Harness
-- Managed CUDA llama.cpp for local GGUF models
-- Optional nInfer runtime for compatible RTX 4080 workflows
-- ComfyUI and Blender MCP setup
+```sh
+tar -xzf agentport-4.0.0.tar.gz
+cd agentport-4.0.0
+./install.sh --target codex --guided --with-tray
+```
 
-The supported integrations in this release are Codex Desktop and DeepSeek
-Harness. Other integrations are not advertised until they are ready.
+The installer asks which providers you want. Credentials are entered through
+local prompts, never through chat. When it finishes, fully quit and reopen
+Codex and start a new task to choose a routed model.
 
-## Local runtime updates
+## Let your agent install it
 
-AgentPort checks official llama.cpp Windows CUDA releases in the background.
-When a newer verified build is available, AgentPort offers an update. It never
-installs the runtime update without confirmation and does not interrupt a model
-that is already running.
+Paste this into a Codex task:
 
-## Windows security
+```text
+Install AgentPort on this machine from the latest release archive at
+https://github.com/ZURAVFX/AgentPort/releases. Download
+agentport-4.0.0.tar.gz, verify its SHA-256, unpack it, and follow AGENTS.md.
+Set up the Codex target with the providers I choose. Preserve my existing
+Codex models, profiles, settings, and ChatGPT login. Use only the provider
+authentication I choose, run the AgentPort doctor, and leave the final app
+restart to me. Never ask me to paste a token or API key into chat.
+```
 
-Each release includes a SHA-256 checksum. A matching checksum verifies the
-downloaded bytes, but it does not replace normal Windows security checks. Do
-not disable Microsoft Defender or add an exclusion to run a blocked build.
+## What is new in 4.0
 
-## Licence
+- NInfer, a managed Windows CUDA llama.cpp runtime with checksum-verified
+  updates and explicit install confirmation.
+- GGUF import from a Hugging Face repository or URL, or from a local .gguf
+  file, with optional mmproj helper support.
+- Start, stop, and status controls for local models, with Codex picker
+  publication so a local model appears alongside your cloud models.
+- A Local page flow for runtime status, updates, and GGUF imports with model
+  selection.
+- Codex Desktop and DeepSeek Harness as the primary targets, with the broader
+  provider and harness surface retained.
 
-AgentPort is released under the MIT Licence.
+## Security
+
+Windows may show a SmartScreen warning for the first run because the binaries
+are not code signed. Verify the SHA-256 of any downloaded archive before
+unpacking it and compare the checksum against the one published in the release
+notes.
