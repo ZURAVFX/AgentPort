@@ -1,13 +1,31 @@
-# AgentPort 4.0.0
+# AgentPort 4.0.1
 
-AgentPort 4.0.0 is the first release of the rebuilt AgentPort, a minimal local
-router for Codex Desktop and DeepSeek Harness. It retains opencode Go and the
-other providers, and adds a managed local model path for Windows GPUs.
+AgentPort 4.0.1 is a naming and packaging cleanup on top of the v4 rebuild.
+There are no behavioural changes to routing, providers, or local model
+handling.
 
-## What is in this release
+## What changed
 
-- AgentPort naming across the router, installers, skills, control centre,
-  documentation, and packaging.
+- Every product-facing trace of the upstream project name is gone. The Control
+  Centre service label, the Managed Codex and caller-key error messages, the
+  Gemini and Claude transport refusals, the install summary, the Hermes publish
+  hint, the Homebrew readiness check, and the GitHub issue templates now read
+  AgentPort.
+- Documentation copy repaired. Several strings still described AgentPort as
+  "a local agentport" after the v4 rename sweep, and the docs landing page
+  header and footer still read CODEX ROUTER. Both now read correctly.
+- Stale pre-rebuild Homebrew formula removed. `packaging/homebrew/agentport.rb`
+  still pointed at v0.4.0-beta.2 and carried a "NOT YET INSTALLABLE" header.
+  `Formula/agentport.rb` is the only formula the release workflow generates, so
+  the dead duplicate is gone.
+- Version bumped to 4.0.1 across `package.json`, the Control Centre package,
+  and both lockfiles.
+
+The upstream MIT attribution in `LICENSE` and `NOTICE.md` is unchanged. The
+licence requires that notice to be kept.
+
+## What is in the 4.0 rebuild
+
 - Codex Desktop integration with managed TOML configuration, provider
   publication, caller authentication, and local credential prompts.
 - DeepSeek Harness support and the retained opencode Go and Zen provider
@@ -30,7 +48,7 @@ Download one of the release archives, verify its SHA-256, and unpack it.
 Windows PowerShell:
 
 ```powershell
-Expand-Archive .\AgentPort-v4.0.0-source.zip -DestinationPath .\agentport
+Expand-Archive .\AgentPort-v4.0.1-source.zip -DestinationPath .\agentport
 cd .\agentport
 .\install.ps1 -Target codex -Guided -WithTray
 ```
@@ -38,8 +56,8 @@ cd .\agentport
 macOS or Linux:
 
 ```sh
-tar -xzf agentport-4.0.0.tar.gz
-cd agentport-4.0.0
+tar -xzf agentport-4.0.1.tar.gz
+cd agentport-4.0.1
 ./install.sh --target codex --guided --with-tray
 ```
 
@@ -52,14 +70,17 @@ Codex task and let your coding agent handle the process.
 
 ## Checksums
 
-agentport-4.0.0.tar.gz: `7f373426ccfb9f79b5c67f64e82c79d91d0f20f4de363a3a49b568de117be8cd`
+agentport-4.0.1.tar.gz (15,084,552 bytes):
+`0b5f7240b82217549dcaa370485f125924c999cfc5dae427260b6d9705400108`
 
-AgentPort-v4.0.0-source.zip: `b1c5b40b54a6982dd83c381b2dbed500a7b75076a2ee6ec65b46a021536fe7b5`
+AgentPort-v4.0.1-source.zip (15,761,014 bytes):
+`c195ae4414e825a061b0a607ba4ceeeade947936555a1c86f1e7505c8c6e7a3c`
 
 ## Verification
 
-The full automated test gate is green for this release: 4,224 passing tests
-with no failures, covering the NInfer runtime, GGUF import, local model
-lifecycle, control centre build, model switching, and the wider regression
-suite. Live end to end verification on a Windows RTX 4080 is still recommended
-before relying on this release for day to day work.
+The full automated test gate is green for this release: 4,357 tests, 4,224
+passing with no failures and 133 skipped, covering the router, providers,
+harness clients, NInfer runtime, GGUF import, local model lifecycle, Control
+Centre build, model switching, and the wider regression suite. Live end to end
+verification on a Windows RTX 4080 is still recommended before relying on this
+release for day to day work.
