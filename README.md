@@ -12,8 +12,8 @@ All provider credentials stay on your computer.
 
 The latest release contains the source archives and their SHA-256 checksums:
 
-- `agentport-4.0.0.tar.gz` and `AgentPort-v4.0.0-source.zip`
-- `agentport-4.0.0.tar.gz.sha256` and `AgentPort-v4.0.0-source.zip.sha256`
+- `agentport-4.0.1.tar.gz` and `AgentPort-v4.0.1-source.zip`
+- `agentport-4.0.1.tar.gz.sha256` and `AgentPort-v4.0.1-source.zip.sha256`
 
 Download an archive, verify its checksum, and unpack it. Then run the installer
 from that folder.
@@ -21,7 +21,7 @@ from that folder.
 Windows PowerShell:
 
 ```powershell
-Expand-Archive .\AgentPort-v4.0.0-source.zip -DestinationPath .\agentport
+Expand-Archive .\AgentPort-v4.0.1-source.zip -DestinationPath .\agentport
 cd .\agentport
 .\install.ps1 -Target codex -Guided -WithTray
 ```
@@ -29,8 +29,8 @@ cd .\agentport
 macOS or Linux:
 
 ```sh
-tar -xzf agentport-4.0.0.tar.gz
-cd agentport-4.0.0
+tar -xzf agentport-4.0.1.tar.gz
+cd agentport-4.0.1
 ./install.sh --target codex --guided --with-tray
 ```
 
@@ -45,7 +45,7 @@ Paste this into a Codex task:
 ```text
 Install AgentPort on this machine from the latest release archive at
 https://github.com/ZURAVFX/AgentPort/releases. Download
-agentport-4.0.0.tar.gz, verify its SHA-256, unpack it, and follow AGENTS.md.
+agentport-4.0.1.tar.gz, verify its SHA-256, unpack it, and follow AGENTS.md.
 Set up the Codex target with the providers I choose. Preserve my existing
 Codex models, profiles, settings, and ChatGPT login. Use only the provider
 authentication I choose, run the AgentPort doctor, and leave the final app
@@ -64,6 +64,12 @@ restart to me. Never ask me to paste a token or API key into chat.
   selection.
 - Codex Desktop and DeepSeek Harness as the primary targets, with the broader
   provider and harness surface retained.
+
+## What is new in 4.0.1
+
+- Naming cleanup. Every product-facing trace of the upstream project name is
+  gone from the interface, the messages, and the documentation.
+- The stale pre-rebuild Homebrew formula is removed.
 
 ## Security
 
