@@ -10,7 +10,7 @@ Provider credentials stay on your computer.
 
 ## Install
 
-1. Download `AgentPort-Setup-3.0.1.exe` from the [latest release](https://github.com/ZURAVFX/AgentPort/releases/latest).
+1. Download `AgentPort-Setup-3.0.2.exe` from the [latest release](https://github.com/ZURAVFX/AgentPort/releases/latest).
 2. Run it. It installs for the current user, so Windows does not ask for
    administrator rights, and it leaves an **AgentPort** shortcut on your
    desktop.
@@ -29,7 +29,7 @@ already entered.
 Paste this into a Codex task:
 
 ```text
-Install AgentPort on this machine. Download AgentPort-Setup-3.0.1.exe from
+Install AgentPort on this machine. Download AgentPort-Setup-3.0.2.exe from
 https://github.com/ZURAVFX/AgentPort/releases/latest, verify it against the
 SHA256SUMS published on that release, and run it. Then open AgentPort and set
 up the Codex target with the providers I choose. Preserve my existing Codex
@@ -38,7 +38,15 @@ leave the final Codex restart to me. Never ask me to paste a token or API key
 into chat.
 ```
 
-## What is new in 3.0.1
+## What is new in 3.0.2
+
+- Fixes the missing `proper-lockfile` dependency that prevented provider and Harness data from loading.
+- Fixes the control-protocol mismatch that blocked setup.
+- Updates app-managed router files alongside the desktop app, preserving local models, environments and settings.
+
+Close AgentPort before running the installer, then reopen it. If the router was already running, restart it from the app. You do not need to uninstall first.
+
+## Features
 
 - One-click Windows installer with a desktop shortcut and no admin prompt.
 - Codex Desktop is the main target. If an earlier installation of the router
@@ -57,7 +65,7 @@ into chat.
 ## Verifying the download
 
 ```powershell
-certutil -hashfile AgentPort-Setup-3.0.1.exe SHA256
+certutil -hashfile AgentPort-Setup-3.0.2.exe SHA256
 ```
 
 Compare the result with the value in `SHA256SUMS` on the release page.
