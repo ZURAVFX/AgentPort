@@ -124,11 +124,12 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--blue);outline-offse
   <div class="shell">
 
     <section class="intro">
-      <p class="kicker">Windows desktop · Codex · Local and API models</p>
+      <p class="kicker">Windows + Apple Silicon · Codex · API models</p>
       <h1>Use your chosen models in Codex.</h1>
       <p class="lede">AgentPort provides a local router and desktop control centre for connecting Codex to selected API providers and local GGUF models.</p>
       <div class="actions">
         <a class="btn btn--primary" href="https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.20/agentport-3.1.20-windows-x64.exe">Download Windows installer</a>
+        <a class="btn" href="https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.21/agentport-3.1.21-macos-arm64.dmg">Download Mac preview</a>
         <a class="btn" href="https://github.com/ZURAVFX/AgentPort">View on GitHub</a>
       </div>
       <figure class="media mask-frame" data-reveal>
@@ -145,7 +146,7 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--blue);outline-offse
       <p class="lede">Keep model setup understandable, whether you use a hosted provider or run a model on your own hardware.</p>
       <ul class="rows" data-reveal>
         <li><span class="n">01</span><span class="t">Add the providers you choose</span><span class="d">Connect selected external models to Codex while keeping native GPT requests on Codex’s own route.</span></li>
-        <li><span class="n">02</span><span class="t">Manage local models</span><span class="d">Install and control supported GGUF models through AgentPort’s local model tools.</span></li>
+        <li><span class="n">02</span><span class="t">Manage local models on Windows</span><span class="d">Install and control supported GGUF models on Windows. The Apple Silicon preview focuses on Codex and API providers.</span></li>
         <li><span class="n">03</span><span class="t">See what is happening</span><span class="d">Review provider connections, model availability, router health and recent usage in one desktop app.</span></li>
       </ul>
     </section>
@@ -154,7 +155,7 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--blue);outline-offse
       <h2>From install to first request.</h2>
       <p class="lede">AgentPort runs locally and publishes the model choices you enable into Codex.</p>
       <ol class="steps" data-reveal>
-        <li><div><span class="t">Install AgentPort</span><p class="d">Download the Windows installer and run it for your user account.</p></div></li>
+        <li><div><span class="t">Install AgentPort</span><p class="d">Run the Windows installer, or open the Apple Silicon DMG and drag AgentPort into Applications.</p></div></li>
         <li><div><span class="t">Connect and choose models</span><p class="d">Open AgentPort, set up Codex, connect the providers you use, and enable the models you want.</p></div></li>
         <li><div><span class="t">Choose the model in Codex</span><p class="d">Select the published model in Codex. Restart Codex after changing its model list to refresh the picker.</p></div></li>
       </ol>
@@ -162,15 +163,20 @@ a:focus-visible,button:focus-visible{outline:2px solid var(--blue);outline-offse
 
     <section class="band" id="install">
       <h2>Install AgentPort.</h2>
-      <p class="lede">The Windows build is a per-user desktop installer.</p>
+      <p class="lede">Choose the Windows installer or Apple Silicon Mac preview. The Mac preview supports Codex and API providers, including OpenCode, with no Homebrew setup required.</p>
       <ol class="steps" data-reveal>
-        <li><div><span class="t">Download the installer</span><p class="d">Use the Windows download below, then run the .exe from your Downloads folder.</p></div></li>
+        <li><div><span class="t">Download the installer</span><p class="d">On Windows, run the .exe. On an Apple Silicon Mac, open the DMG and drag AgentPort into Applications.</p></div></li>
         <li><div><span class="t">Open the Control Center</span><p class="d">Follow the Codex setup in AgentPort and connect only the providers you intend to use.</p></div></li>
         <li><div><span class="t">Refresh Codex</span><p class="d">After adding or changing models, restart Codex so the model picker reloads.</p></div></li>
       </ol>
       <div class="actions">
         <a class="btn btn--primary" href="https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.20/agentport-3.1.20-windows-x64.exe">Download Windows installer</a>
         <a class="btn" href="https://github.com/ZURAVFX/AgentPort/issues/new/choose">Compatibility / bugs</a>
+        <a class="btn" href="https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.21/agentport-3.1.21-macos-arm64.dmg">Download Mac preview</a>
+      </div>
+      <div class="note">
+        <b>Mac preview installation.</b>
+        This Apple Silicon build supports API models only and is ad-hoc signed. If macOS blocks it, use Privacy &amp; Security &gt; Open Anyway after trying to open AgentPort. <a href="https://github.com/ZURAVFX/AgentPort/blob/main/release-notes/v3.1.21.md">Read the Mac setup notes.</a>
       </div>
       <div class="note">
         <b>Provider access and local speed depend on your setup.</b>
