@@ -1,0 +1,24 @@
+{
+  "version": "3.1.23",
+  "sourceSha": "948253508803c7b6ca1b3883c371e1f74a2f6f89",
+  "assets": [
+    {
+      "name": "agentport-3.1.23-windows-x64.exe",
+      "size": 143803423,
+      "sha256": "06a5006479abbb2dabca624b13b75423ba1f25843c490e04b28c478e236ab297",
+      "url": "https://release-assets.githubusercontent.com/github-production-release-asset/1359517380/da238e35-25b5-4e58-a38b-c25828b6b54d?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-18T17%3A30%3A23Z&rscd=attachment%3B+filename%3Dagentport-3.1.23-windows-x64.exe&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-10-18T16%3A30%3A20Z&ske=2026-10-18T17%3A30%3A23Z&sks=b&skv=2018-11-09&sig=vXdbSkU1Gac1%2FChlTRcSdJl3CwjUv0F1aejOv5BZPxQ%3D"
+    },
+    {
+      "name": "agentport-3.1.23-macos-arm64.dmg",
+      "size": 194962593,
+      "sha256": "d5fcca6809378ab2401068e96d1bb39d1bb7c491e18aca4c1616be24e6987727",
+      "url": "https://release-assets.githubusercontent.com/github-production-release-asset/1359517380/9ad4407b-5dac-49e9-997d-5245ac71a416?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-18T17%3A33%3A07Z&rscd=attachment%3B+filename%3Dagentport-3.1.23-macos-arm64.dmg&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-10-18T16%3A32%3A28Z&ske=2026-10-18T17%3A33%3A07Z&sks=b&skv=2018-11-09&sig=%2BBJgiApaVSC33Epc%2B7jDu4orkBs7k5ZpczKoEyR6MQk%3D"
+    },
+    {
+      "name": "agentport-3.1.23-macos-arm64.zip",
+      "size": 199173888,
+      "sha256": "038849cfb043c68e0d8c92bee273efb924c4ebecbce878d4b7729efd98edb55a",
+      "url": "https://release-assets.githubusercontent.com/github-production-release-asset/1359517380/326e3d1c-d13b-44f1-80fa-84d7f0c4d3ca?sp=r&sv=2018-11-09&sr=b&spr=https&se=2026-10-18T17%3A20%3A42Z&rscd=attachment%3B+filename%3Dagentport-3.1.23-macos-arm64.zip&rsct=application%2Foctet-stream&skoid=96c2d410-5711-43a1-aedd-ab1947aa7ab0&sktid=398a6654-997b-47e9-b12b-9515b896b4de&skt=2026-10-18T16%3A20%3A34Z&ske=2026-10-18T17%3A20%3A42Z&sks=b&skv=2018-11-09&sig=gK0%2FP0w%2BpO%2FG6wdWHFZMVUKZOVlxkMEwajhf4qD3wVQ%3D"
+    }
+  ]
+}
