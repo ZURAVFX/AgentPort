@@ -1,0 +1,54 @@
+name: Verify public AgentPort downloads
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [.github/workflows/verify-agentport-downloads.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check anonymous download access, published checksums and the live website
+        shell: python
+        run: |
+          import hashlib, time, urllib.request
+          base = 'https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.23/'
+          assets = [
+              ('agentport-3.1.23-windows-x64.exe', 143803423, '06a5006479abbb2dabca624b13b75423ba1f25843c490e04b28c478e236ab297'),
+              ('agentport-3.1.23-macos-arm64.dmg', 194962593, 'd5fcca6809378ab2401068e96d1bb39d1bb7c491e18aca4c1616be24e6987727'),
+              ('agentport-3.1.23-macos-arm64.zip', 199173888, '038849cfb043c68e0d8c92bee273efb924c4ebecbce878d4b7729efd98edb55a'),
+          ]
+          headers = {'User-Agent': 'AgentPort-public-download-verifier'}
+          for name, expected_size, expected_hash in assets:
+              request = urllib.request.Request(base + name, headers=headers, method='HEAD')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  assert response.status == 200
+                  assert int(response.headers['Content-Length']) == expected_size
+              print('Anonymous installer link passed:', name, expected_size)
+          with urllib.request.urlopen(urllib.request.Request(base + 'agentport-3.1.23-SHA256SUMS.txt', headers=headers), timeout=30) as response:
+              checksums = response.read(4096).decode()
+          parsed = dict((parts[1], parts[0]) for parts in (line.split() for line in checksums.splitlines() if line.strip()))
+          assert parsed == {name: digest for name, size, digest in assets}
+          print('Public SHA-256 file matches all three verified installers.')
+          page_url = 'https://zuravfx.github.io/AgentPort/'
+          for attempt in range(6):
+              with urllib.request.urlopen(urllib.request.Request(page_url + '?release-check=3.1.23', headers=headers), timeout=30) as response:
+                  assert response.status == 200
+                  page = response.read(262144).decode()
+              if 'AgentPort 3.1.23' in page and 'Codex Accounts' in page:
+                  break
+              if attempt == 5:
+                  raise AssertionError('The public download page has not deployed the release update.')
+              time.sleep(10)
+          for name in ['agentport-3.1.23-windows-x64.exe', 'agentport-3.1.23-macos-arm64.dmg']:
+              assert base + name in page
+          assert 'agentport-3.1.20-windows-x64.exe' not in page
+          assert 'agentport-3.1.22-macos-arm64.dmg' not in page
+          assert 'Add Codex account' in page and 'Context Manager' in page
+          print('Live website serves the new version, account setup and both current installer links.')
