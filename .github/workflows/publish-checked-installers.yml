@@ -4,7 +4,9 @@ on:
   workflow_dispatch:
   push:
     branches: [main]
-    paths: [release-notes/installers-v3.1.23.json]
+    paths:
+      - release-notes/installers-v3.1.23.json
+      - .github/workflows/publish-checked-installers.yml
 
 permissions:
   contents: write
@@ -78,11 +80,21 @@ jobs:
             gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'AgentPort 3.1.23 — Codex Accounts' --notes-file release-notes/v3.1.23.md
           fi
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber checked-installers/*
-          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > /tmp/uploaded-release.json
+          # A proposed tag may not exist until publication. Resolve the draft
+          # from the releases collection, then inspect that exact release ID.
+          gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > /tmp/releases.json
+          release_id=$(python - <<'PY'
+          import json
+          candidates = [item for item in json.load(open('/tmp/releases.json')) if item['tag_name'] == 'v3.1.23']
+          assert len(candidates) == 1 and candidates[0]['draft'] is True
+          print(candidates[0]['id'])
+          PY
+          )
+          gh api "repos/$GITHUB_REPOSITORY/releases/$release_id" > /tmp/uploaded-release.json
           python - <<'PY'
           import hashlib, json, pathlib
           release = json.load(open('/tmp/uploaded-release.json'))
-          assert release['draft'] is True
+          assert release['draft'] is True and release['tag_name'] == 'v3.1.23'
           expected = {file.name: {'size': file.stat().st_size, 'digest': 'sha256:' + hashlib.sha256(file.read_bytes()).hexdigest()} for file in pathlib.Path('checked-installers').iterdir()}
           assert len(release['assets']) == len(expected) == 4
           for asset in release['assets']:
