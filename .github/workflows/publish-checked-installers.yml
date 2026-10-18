@@ -1,0 +1,96 @@
+name: Publish checked AgentPort installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths: [release-notes/installers-v3.1.23.json]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: publish-agentport-v3.1.23
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      # This repository contains distribution metadata only. No application
+      # source or private repository credentials are used by this workflow.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download only the three reviewed installer assets
+        shell: python
+        run: |
+          import hashlib, json, pathlib, re, urllib.request, urllib.parse
+          manifest = json.loads(pathlib.Path('release-notes/installers-v3.1.23.json').read_text())
+          assert manifest['version'] == '3.1.23'
+          assert re.fullmatch(r'[a-f0-9]{40}', manifest['sourceSha'])
+          expected = {'agentport-3.1.23-windows-x64.exe', 'agentport-3.1.23-macos-arm64.dmg', 'agentport-3.1.23-macos-arm64.zip'}
+          assert len(manifest['assets']) == 3
+          output = pathlib.Path('checked-installers')
+          output.mkdir()
+          sums = []
+          for asset in manifest['assets']:
+              name = asset['name']
+              assert name in expected
+              expected.remove(name)
+              assert re.fullmatch(r'[a-f0-9]{64}', asset['sha256'])
+              assert isinstance(asset['size'], int) and 1048576 < asset['size'] < 1073741824
+              url = urllib.parse.urlparse(asset['url'])
+              assert url.scheme == 'https' and url.hostname == 'release-assets.githubusercontent.com'
+              assert not url.username and not url.password and not url.fragment
+              digest = hashlib.sha256()
+              size = 0
+              request = urllib.request.Request(asset['url'], headers={'User-Agent': 'AgentPort-verified-installer-publisher'})
+              with urllib.request.urlopen(request, timeout=90) as source, (output / name).open('wb') as target:
+                  assert source.status == 200
+                  assert urllib.parse.urlparse(source.geturl()).hostname == 'release-assets.githubusercontent.com'
+                  while True:
+                      chunk = source.read(1024 * 1024)
+                      if not chunk:
+                          break
+                      size += len(chunk)
+                      assert size <= asset['size'], 'Installer exceeds the reviewed size'
+                      digest.update(chunk)
+                      target.write(chunk)
+              assert size == asset['size'], 'Truncated installer download'
+              assert digest.hexdigest() == asset['sha256'], 'Installer checksum mismatch'
+              sums.append(asset['sha256'] + '  ' + name)
+              print('Verified installer:', name, size, digest.hexdigest())
+          assert not expected
+          (output / 'agentport-3.1.23-SHA256SUMS.txt').write_text('\n'.join(sums) + '\n')
+      - name: Stage and publish only checksum-matched assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$GITHUB_REPOSITORY" = 'ZURAVFX/AgentPort'
+          tag='v3.1.23'
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft >/tmp/existing-release.json 2>/dev/null; then
+            python -c 'import json; assert json.load(open("/tmp/existing-release.json"))["isDraft"], "Refuse to replace an already published release"'
+          else
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'AgentPort 3.1.23 — Codex Accounts' --notes-file release-notes/v3.1.23.md
+          fi
+          gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber checked-installers/*
+          gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" > /tmp/uploaded-release.json
+          python - <<'PY'
+          import hashlib, json, pathlib
+          release = json.load(open('/tmp/uploaded-release.json'))
+          assert release['draft'] is True
+          expected = {file.name: {'size': file.stat().st_size, 'digest': 'sha256:' + hashlib.sha256(file.read_bytes()).hexdigest()} for file in pathlib.Path('checked-installers').iterdir()}
+          assert len(release['assets']) == len(expected) == 4
+          for asset in release['assets']:
+              target = expected.pop(asset['name'])
+              assert asset['state'] == 'uploaded'
+              assert asset['size'] == target['size']
+              assert asset['digest'] == target['digest']
+          assert not expected
+          PY
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file release-notes/v3.1.23.md
+          gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url,isDraft,assets
