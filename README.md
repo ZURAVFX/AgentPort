@@ -2,23 +2,25 @@
 
 Manage several Codex accounts, connect selected API providers and run supported local GGUF models from one desktop control centre.
 
-## Download AgentPort 3.1.24
+## Download AgentPort
 
-**[Windows x64 installer](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-windows-x64.exe)**
+**[Windows x64 installer 3.1.25](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.25/agentport-3.1.25-windows-x64.exe)**
 
 **[Apple Silicon Mac preview](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.24.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Windows release notes](release-notes/v3.1.25.md) · [Windows SHA-256 checksum](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.25/agentport-3.1.25-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
 
-## Desktop sign-in fix
+The Mac preview remains on 3.1.24 while its next build is pending.
 
-Version 3.1.24 fixes the **Codex CLI is not installed** error on supported desktop-only installations. AgentPort now detects the sign-in helper bundled with the desktop app. After updating, click **Sign in** beside the account you already added; you do not need to remove or recreate it.
+## Subscription switching and updates
+
+Windows 3.1.25 adds **Use this subscription** in Codex Accounts and fixes a successful browser sign-in being reported as failed. Newer releases download automatically on launch, with size and checksum verification and an **Install update** button. OpenCode model discovery refreshes on every launch, preserving your choices.
 
 ## Add your Codex subscriptions
 
 1. Open **Codex Accounts** in the left sidebar and click **Add Codex account**.
 2. Finish sign-in in your browser. Repeat for each ChatGPT subscription you use.
-3. Click **Choose account for a chat**, pick an account on the existing conversation in Context Manager, then click **Apply**.
+3. On Windows 3.1.25, choose **Use this subscription**. The next message uses that account, without restarting Codex. To override a particular chat, use **Choose account for a chat** and select its account in Context Manager. Mac 3.1.24 uses this per-chat control.
 
 You do not need a separate account-manager app or multiple Codex windows. A running task keeps its account; a pending change applies at a confirmed new turn. Existing conversation IDs and Open app/Resume controls are retained. The selected account must support the model, and live cross-account acceptance of account-scoped context remains unverified.
 
