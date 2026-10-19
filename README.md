@@ -2,13 +2,17 @@
 
 Manage several Codex accounts, connect selected API providers and run supported local GGUF models from one desktop control centre.
 
-## Download AgentPort 3.1.23
+## Download AgentPort 3.1.24
 
-**[Windows x64 installer](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.23/agentport-3.1.23-windows-x64.exe)**
+**[Windows x64 installer](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-windows-x64.exe)**
 
-**[Apple Silicon Mac preview](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.23/agentport-3.1.23-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.23/agentport-3.1.23-macos-arm64.zip)
+**[Apple Silicon Mac preview](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.23.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.23/agentport-3.1.23-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Release notes](release-notes/v3.1.24.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+
+## Desktop sign-in fix
+
+Version 3.1.24 fixes the **Codex CLI is not installed** error on supported desktop-only installations. AgentPort now detects the sign-in helper bundled with the desktop app. After updating, click **Sign in** beside the account you already added; you do not need to remove or recreate it.
 
 ## Add your Codex subscriptions
 
