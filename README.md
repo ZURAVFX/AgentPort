@@ -4,13 +4,17 @@ Manage several Codex accounts, connect selected API providers and run supported 
 
 ## Download AgentPort
 
-**[Windows x64 installer 3.1.25](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.25/agentport-3.1.25-windows-x64.exe)**
+**[Windows x64 installer 3.1.26](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.26/agentport-3.1.26-windows-x64.exe)**
 
 **[Apple Silicon Mac preview](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.24/agentport-3.1.24-macos-arm64.zip)
 
-[Windows release notes](release-notes/v3.1.25.md) · [Windows SHA-256 checksum](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.25/agentport-3.1.25-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Windows release notes](release-notes/v3.1.26.md) · [Windows SHA-256 checksum](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.26/agentport-3.1.26-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
 
 The Mac preview remains on 3.1.24 while its next build is pending.
+
+## Haiku token safeguard
+
+Windows 3.1.26 keeps connector tools behind Codex Code Mode and refuses oversized tool lists before sending a Haiku request. This prevents giant schema inventories from repeatedly consuming the context window. Native GPT context settings are unchanged.
 
 ## Subscription switching and updates
 
