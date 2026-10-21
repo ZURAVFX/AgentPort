@@ -4,13 +4,17 @@ Manage several Codex accounts, connect selected API providers and run supported 
 
 ## Download AgentPort
 
-**[Windows x64 installer 3.1.29](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.29/agentport-3.1.29-windows-x64.exe)**
+**[Windows x64 installer 3.1.30](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-windows-x64.exe)**
 
-**[Apple Silicon Mac preview](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.29/agentport-3.1.29-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.29/agentport-3.1.29-macos-arm64.zip)
+**[Apple Silicon Mac preview](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.29.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.29/agentport-3.1.29-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Release notes](release-notes/v3.1.30.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
 
-Windows and Apple Silicon builds are both available on 3.1.29.
+Windows and Apple Silicon builds are both available on 3.1.30.
+
+## Find your models
+
+Routed model names in Codex start with their provider, for example `(OpenRouter) Qwen`. API Models groups providers alphabetically, with free models first and model names A–Z. Certified subagent routes retain their priority slots in Codex. NVIDIA NIM setup is under **API Models → Connect provider → NVIDIA NIM**.
 
 ## Usage and account allowances
 
@@ -18,7 +22,7 @@ Usage shows each saved Codex subscription separately, including its reported all
 
 ## Haiku token safeguard
 
-AgentPort 3.1.29 keeps connector tools behind Codex Code Mode and refuses oversized tool lists before sending a Haiku request. This prevents giant schema inventories from repeatedly consuming the context window. Native GPT context settings are unchanged.
+AgentPort 3.1.30 keeps connector tools behind Codex Code Mode and blocks Haiku requests larger than 256 KiB before forwarding, including retries and compaction requests. This is a protective request-size limit, not a token or billing estimate. It can block legitimate long conversations. Haiku cost efficiency remains unverified. Native GPT context settings are unchanged.
 
 ## Subscription switching and updates
 
