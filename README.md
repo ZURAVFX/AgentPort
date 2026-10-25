@@ -4,13 +4,19 @@ Manage several Codex accounts, connect selected API providers and run supported 
 
 ## Download AgentPort
 
-**[Windows x64 installer 3.1.30](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-windows-x64.exe)**
+**[Windows x64 installer 3.1.31](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.31/agentport-3.1.31-windows-x64.exe)**
 
-**[Apple Silicon Mac preview](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.zip)
+**[Apple Silicon Mac preview 3.1.30](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.30.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Release notes](release-notes/v3.1.31.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.31/agentport-3.1.31-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
 
-Windows and Apple Silicon builds are both available on 3.1.30.
+Windows is on 3.1.31. The Apple Silicon preview remains on 3.1.30 while its new native build is pending.
+
+## Steering and updates
+
+3.1.31 fixes AgentPort rejecting Codex interruption messages while steering a running reply. Install update now queues the verified installer while model requests, downloads or sign-in are active, with a clear waiting message and Cancel update. It opens when the router is confirmed idle. After this first upgrade, finish active chats and restart the computer to ensure the new background router is loaded. On Mac, finish the usual Applications replacement after the DMG opens. The 3.1.31 Mac build is pending.
+
+Older versions retain their old busy-update behaviour until updated once. Finish active requests before that first installation. Queue state lasts for the current AgentPort session.
 
 ## Find your models
 
@@ -22,7 +28,7 @@ Usage shows each saved Codex subscription separately, including its reported all
 
 ## Haiku token safeguard
 
-AgentPort 3.1.30 keeps connector tools behind Codex Code Mode and blocks Haiku requests larger than 256 KiB before forwarding, including retries and compaction requests. This is a protective request-size limit, not a token or billing estimate. It can block legitimate long conversations. Haiku cost efficiency remains unverified. Native GPT context settings are unchanged.
+AgentPort 3.1.31 keeps connector tools behind Codex Code Mode and blocks Haiku requests larger than 256 KiB before forwarding, including retries and compaction requests. This is a protective request-size limit, not a token or billing estimate. It can block legitimate long conversations. Haiku cost efficiency remains unverified. Native GPT context settings are unchanged.
 
 ## Subscription switching and updates
 
