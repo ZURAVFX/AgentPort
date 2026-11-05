@@ -4,13 +4,19 @@ Manage several Codex accounts, connect selected API providers and run supported 
 
 ## Download AgentPort
 
-**[Windows x64 installer 3.1.33](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.33/agentport-3.1.33-windows-x64.exe)**
+**[Windows x64 installer 3.1.40](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-windows-x64.exe)**
 
-**[Apple Silicon Mac preview 3.1.30](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.30/agentport-3.1.30-macos-arm64.zip)
+**[Apple Silicon Mac preview 3.1.40](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.33.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.33/agentport-3.1.33-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Release notes](release-notes/v3.1.40.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
 
-Windows is on 3.1.33. The Apple Silicon preview remains on 3.1.30 while its new native build is pending.
+Windows and Apple Silicon downloads both contain AgentPort 3.1.40.
+
+## GPT context windows
+
+In **Context Manager → GPT context windows**, configure each native GPT model independently. Choose Codex default, a 1M preset with compaction at 900K, or custom limits within the supported maximum. Save, fully quit and reopen Codex, then start a new chat. Larger budgets can increase latency and usage. Local and third-party models retain their own settings.
+
+Account sign-in now keeps device codes visible, with copy, retry and cancel controls. NVIDIA NIM request compatibility fixes are included.
 
 ## Optional routing settings
 
@@ -24,7 +30,7 @@ The top of Context Manager now holds **Global Codex routing account**. It select
 
 ## Steering and updates
 
-3.1.33 fixes AgentPort rejecting Codex interruption messages while steering a running reply. Install update now queues the verified installer while model requests, downloads or sign-in are active, with a clear waiting message and Cancel update. It opens when the router is confirmed idle. After this first upgrade, finish active chats and restart the computer to ensure the new background router is loaded. On Mac, finish the usual Applications replacement after the DMG opens. The 3.1.33 Mac build is pending.
+3.1.40 fixes AgentPort rejecting Codex interruption messages while steering a running reply. Install update now queues the verified installer while model requests, downloads or sign-in are active, with a clear waiting message and Cancel update. It opens when the router is confirmed idle. Finish active chats before installation, then reopen AgentPort and Codex to load the updated router. On Mac, finish the usual Applications replacement after the DMG opens. Windows and Apple Silicon packages share the same tested source.
 
 Older versions retain their old busy-update behaviour until updated once. Finish active requests before that first installation. Queue state lasts for the current AgentPort session.
 
@@ -38,7 +44,7 @@ Usage shows each saved Codex subscription separately, including its reported all
 
 ## Haiku token safeguard
 
-AgentPort 3.1.33 keeps connector tools behind Codex Code Mode and blocks Haiku requests larger than 256 KiB before forwarding, including retries and compaction requests. This is a protective request-size limit, not a token or billing estimate. It can block legitimate long conversations. Haiku cost efficiency remains unverified. Native GPT context settings are unchanged.
+AgentPort 3.1.40 keeps connector tools behind Codex Code Mode and blocks Haiku requests larger than 256 KiB before forwarding, including retries and compaction requests. This is a protective request-size limit, not a token or billing estimate. It can block legitimate long conversations. Haiku cost efficiency remains unverified. Native GPT context settings stay at their defaults unless you save a per-model override.
 
 ## Subscription switching and updates
 
