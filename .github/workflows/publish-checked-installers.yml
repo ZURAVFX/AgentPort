@@ -2,17 +2,12 @@ name: Publish checked AgentPort installers
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - release-notes/installers-v3.1.23.json
-      - .github/workflows/publish-checked-installers.yml
 
 permissions:
   contents: write
 
 concurrency:
-  group: publish-agentport-v3.1.23
+  group: publish-agentport-v3.1.40
   cancel-in-progress: false
 
 jobs:
@@ -29,10 +24,10 @@ jobs:
         shell: python
         run: |
           import hashlib, json, pathlib, re, urllib.request, urllib.parse
-          manifest = json.loads(pathlib.Path('release-notes/installers-v3.1.23.json').read_text())
-          assert manifest['version'] == '3.1.23'
+          manifest = json.loads(pathlib.Path('release-notes/installers-v3.1.40.json').read_text())
+          assert manifest['version'] == '3.1.40'
           assert re.fullmatch(r'[a-f0-9]{40}', manifest['sourceSha'])
-          expected = {'agentport-3.1.23-windows-x64.exe', 'agentport-3.1.23-macos-arm64.dmg', 'agentport-3.1.23-macos-arm64.zip'}
+          expected = {'agentport-3.1.40-windows-x64.exe', 'agentport-3.1.40-macos-arm64.dmg', 'agentport-3.1.40-macos-arm64.zip'}
           assert len(manifest['assets']) == 3
           output = pathlib.Path('checked-installers')
           output.mkdir()
@@ -65,7 +60,7 @@ jobs:
               sums.append(asset['sha256'] + '  ' + name)
               print('Verified installer:', name, size, digest.hexdigest())
           assert not expected
-          (output / 'agentport-3.1.23-SHA256SUMS.txt').write_text('\n'.join(sums) + '\n')
+          (output / 'agentport-3.1.40-SHA256SUMS.txt').write_text('\n'.join(sums) + '\n')
       - name: Stage and publish only checksum-matched assets
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,11 +68,11 @@ jobs:
         run: |
           set -euo pipefail
           test "$GITHUB_REPOSITORY" = 'ZURAVFX/AgentPort'
-          tag='v3.1.23'
+          tag='v3.1.40'
           if gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json isDraft >/tmp/existing-release.json 2>/dev/null; then
             python -c 'import json; assert json.load(open("/tmp/existing-release.json"))["isDraft"], "Refuse to replace an already published release"'
           else
-            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'AgentPort 3.1.23 — Codex Accounts' --notes-file release-notes/v3.1.23.md
+            gh release create "$tag" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --draft --title 'AgentPort 3.1.40: GPT context controls' --notes-file release-notes/v3.1.40.md
           fi
           gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber checked-installers/*
           # A proposed tag may not exist until publication. Resolve the draft
@@ -85,7 +80,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" > /tmp/releases.json
           release_id=$(python - <<'PY'
           import json
-          candidates = [item for item in json.load(open('/tmp/releases.json')) if item['tag_name'] == 'v3.1.23']
+          candidates = [item for item in json.load(open('/tmp/releases.json')) if item['tag_name'] == 'v3.1.40']
           assert len(candidates) == 1 and candidates[0]['draft'] is True
           print(candidates[0]['id'])
           PY
@@ -94,7 +89,7 @@ jobs:
           python - <<'PY'
           import hashlib, json, pathlib
           release = json.load(open('/tmp/uploaded-release.json'))
-          assert release['draft'] is True and release['tag_name'] == 'v3.1.23'
+          assert release['draft'] is True and release['tag_name'] == 'v3.1.40'
           expected = {file.name: {'size': file.stat().st_size, 'digest': 'sha256:' + hashlib.sha256(file.read_bytes()).hexdigest()} for file in pathlib.Path('checked-installers').iterdir()}
           assert len(release['assets']) == len(expected) == 4
           for asset in release['assets']:
@@ -104,5 +99,5 @@ jobs:
               assert asset['digest'] == target['digest']
           assert not expected
           PY
-          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file release-notes/v3.1.23.md
+          gh release edit "$tag" --repo "$GITHUB_REPOSITORY" --draft=false --latest --notes-file release-notes/v3.1.40.md
           gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json url,isDraft,assets
