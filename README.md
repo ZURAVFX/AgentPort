@@ -1,16 +1,20 @@
 # AgentPort
 
-Manage several Codex accounts, connect selected API providers and run supported local GGUF models from one desktop control centre.
+Manage several Codex accounts, connect selected API providers and run supported local models from one desktop control centre.
 
 ## Download AgentPort
 
-**[Windows x64 installer 3.1.40](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-windows-x64.exe)**
+**[Windows x64 installer 3.1.41](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-windows-x64.exe)**
 
-**[Apple Silicon Mac preview 3.1.40](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-macos-arm64.zip)
+**[Apple Silicon Mac preview 3.1.41](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.40.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.40/agentport-3.1.40-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Release notes](release-notes/v3.1.41.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
 
-Windows and Apple Silicon downloads both contain AgentPort 3.1.40.
+Windows and Apple Silicon downloads both contain AgentPort 3.1.41.
+
+## Clearer local controls and interface
+
+3.1.41 introduces a shared light and dark visual design, larger controls, clearer states and simpler model rows. Local includes the tested native NInfer GSQ3 profile and Flash Next with Strata, with explicit Start and Stop & unload controls. Existing native GSQ3 files in WSL are reused; a fresh system still needs the native runtime and model installed as shown in Setup. No real model was reloaded during this interface audit.
 
 ## GPT context windows
 
@@ -30,7 +34,7 @@ The top of Context Manager now holds **Global Codex routing account**. It select
 
 ## Steering and updates
 
-3.1.40 fixes AgentPort rejecting Codex interruption messages while steering a running reply. Install update now queues the verified installer while model requests, downloads or sign-in are active, with a clear waiting message and Cancel update. It opens when the router is confirmed idle. Finish active chats before installation, then reopen AgentPort and Codex to load the updated router. On Mac, finish the usual Applications replacement after the DMG opens. Windows and Apple Silicon packages share the same tested source.
+3.1.41 fixes AgentPort rejecting Codex interruption messages while steering a running reply. Install update now queues the verified installer while model requests, downloads or sign-in are active, with a clear waiting message and Cancel update. It opens when the router is confirmed idle. Finish active chats before installation, then reopen AgentPort and Codex to load the updated router. On Mac, finish the usual Applications replacement after the DMG opens. Windows and Apple Silicon packages share the same tested source.
 
 Older versions retain their old busy-update behaviour until updated once. Finish active requests before that first installation. Queue state lasts for the current AgentPort session.
 
@@ -42,13 +46,13 @@ Routed model names in Codex start with their provider, for example `(OpenRouter)
 
 Usage shows each saved Codex subscription separately, including its reported allowance windows and reset times. Account management is at the top of Context Manager. Usage retains allowance readings and performance details.
 
-## Haiku token safeguard
+## Claude Haiku removed
 
-AgentPort 3.1.40 keeps connector tools behind Codex Code Mode and blocks Haiku requests larger than 256 KiB before forwarding, including retries and compaction requests. This is a protective request-size limit, not a token or billing estimate. It can block legitimate long conversations. Haiku cost efficiency remains unverified. Native GPT context settings stay at their defaults unless you save a per-model override.
+Claude Haiku is removed from the catalogue. Stale Haiku requests are blocked locally before forwarding. Its usage behaviour was not reliable enough to keep available. Native GPT context settings stay at their defaults unless you save a per-model override.
 
 ## Subscription switching and updates
 
-AgentPort adds **Use this subscription** in Codex Accounts and fixes a successful browser sign-in being reported as failed. Newer releases download automatically on launch, with size and checksum verification and an **Install update** button. OpenCode model discovery refreshes on every launch, preserving your choices.
+Choose **Use this subscription** at the top of Context Manager. Browser sign-in keeps each saved account separate and reports whether login completed. Newer releases download automatically on launch, with size and checksum verification and an **Install update** button. OpenCode model discovery refreshes on every launch, preserving your choices.
 
 ## Add your Codex subscriptions
 
