@@ -4,17 +4,17 @@ Manage several Codex accounts, connect selected API providers and run supported 
 
 ## Download AgentPort
 
-**[Windows x64 installer 3.1.41](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-windows-x64.exe)**
+**[Windows x64 installer 3.1.42](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.42/agentport-3.1.42-windows-x64.exe)**
 
-**[Apple Silicon Mac preview 3.1.41](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-macos-arm64.zip)
+**[Apple Silicon Mac preview 3.1.42](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.42/agentport-3.1.42-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.42/agentport-3.1.42-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.41.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.41/agentport-3.1.41-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Release notes](release-notes/v3.1.42.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.42/agentport-3.1.42-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
 
-Windows and Apple Silicon downloads both contain AgentPort 3.1.41.
+Windows and Apple Silicon downloads both contain AgentPort 3.1.42.
 
 ## Clearer local controls and interface
 
-3.1.41 introduces a shared light and dark visual design, larger controls, clearer states and simpler model rows. Local includes the tested native NInfer GSQ3 profile and Flash Next with Strata, with explicit Start and Stop & unload controls. Existing native GSQ3 files in WSL are reused; a fresh system still needs the native runtime and model installed as shown in Setup. No real model was reloaded during this interface audit.
+3.1.42 fixes the cramped Dashboard speed table and page overflow. Model names and every speed metric stay visible at desktop and narrow window sizes. It also includes the shared light and dark visual design, larger controls, clearer states and simpler model rows. Local includes the tested native NInfer GSQ3 profile and Flash Next with Strata, with explicit Start and Stop & unload controls. Existing native GSQ3 files in WSL are reused; a fresh system still needs the native runtime and model installed as shown in Setup. No real model was reloaded during this interface audit.
 
 ## GPT context windows
 
@@ -34,7 +34,7 @@ The top of Context Manager now holds **Global Codex routing account**. It select
 
 ## Steering and updates
 
-3.1.41 fixes AgentPort rejecting Codex interruption messages while steering a running reply. Install update now queues the verified installer while model requests, downloads or sign-in are active, with a clear waiting message and Cancel update. It opens when the router is confirmed idle. Finish active chats before installation, then reopen AgentPort and Codex to load the updated router. On Mac, finish the usual Applications replacement after the DMG opens. Windows and Apple Silicon packages share the same tested source.
+3.1.42 fixes AgentPort rejecting Codex interruption messages while steering a running reply. Install update now queues the verified installer while model requests, downloads or sign-in are active, with a clear waiting message and Cancel update. It opens when the router is confirmed idle. Finish active chats before installation, then reopen AgentPort and Codex to load the updated router. On Mac, finish the usual Applications replacement after the DMG opens. Windows and Apple Silicon packages share the same tested source.
 
 Older versions retain their old busy-update behaviour until updated once. Finish active requests before that first installation. Queue state lasts for the current AgentPort session.
 
