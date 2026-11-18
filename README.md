@@ -2,13 +2,15 @@
 
 Manage several Codex accounts, connect selected API providers and run supported local models from one desktop control centre.
 
+[AgentPort for Codex on Zura](https://zuravfx.com/products/agentport/)
+
 ## Download AgentPort
 
 **[Windows x64 installer 3.1.43](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-windows-x64.exe)**
 
 **[Apple Silicon Mac preview 3.1.43](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.43.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-SHA256SUMS.txt) · [Website](https://zuravfx.github.io/AgentPort/)
+[Release notes](release-notes/v3.1.43.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-SHA256SUMS.txt)
 
 Windows and Apple Silicon downloads both contain AgentPort 3.1.43.
 
