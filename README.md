@@ -6,13 +6,13 @@ Manage several Codex accounts, connect selected API providers and run supported 
 
 ## Download AgentPort
 
-**[Windows x64 installer 3.1.43](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-windows-x64.exe)**
+**[Windows x64 installer 3.1.44](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.44/agentport-3.1.44-windows-x64.exe)**
 
-**[Apple Silicon Mac preview 3.1.43](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-macos-arm64.zip)
+**[Apple Silicon Mac preview 3.1.44](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.44/agentport-3.1.44-macos-arm64.dmg)** · [Mac ZIP alternative](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.44/agentport-3.1.44-macos-arm64.zip)
 
-[Release notes](release-notes/v3.1.43.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/agentport-3.1.43-SHA256SUMS.txt)
+[Release notes](release-notes/v3.1.44.md) · [SHA-256 checksums](https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.44/agentport-3.1.44-SHA256SUMS.txt)
 
-Windows and Apple Silicon downloads both contain AgentPort 3.1.43.
+Windows and Apple Silicon downloads both contain AgentPort 3.1.44.
 
 ## Automatic GPT model discovery
 
@@ -26,7 +26,7 @@ If GPT-6.2-Sol or GPT-6.2-Astra is already in the catalogue but missing from the
 
 ## GPT context windows
 
-In **Context Manager → GPT context windows**, configure each native GPT model independently. Choose Codex default, a 1M preset with compaction at 900K, or custom limits within the supported maximum. Save, fully quit and reopen Codex, then start a new chat. Larger budgets can increase latency and usage. Local and third-party models retain their own settings.
+In **Context Manager → GPT context windows**, configure each native GPT model independently. Choose **Max** to use the supported window with compaction at 90% of its usable space. For GPT-6.2 Astra and Sol, that gives an 872,000-token window with compaction at 745,560 tokens. Codex default, custom limits and the 1M preset on compatible models are also available. Save, fully quit and reopen Codex, then start a new chat. Larger budgets can increase latency and usage. Local and third-party models retain their own settings.
 
 Account sign-in now keeps device codes visible, with copy, retry and cancel controls. NVIDIA NIM request compatibility fixes are included.
 

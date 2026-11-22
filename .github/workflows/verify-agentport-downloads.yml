@@ -18,11 +18,11 @@ jobs:
         shell: python
         run: |
           import hashlib, time, urllib.request
-          base = 'https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.43/'
+          base = 'https://github.com/ZURAVFX/AgentPort/releases/download/v3.1.44/'
           assets = [
-              ('agentport-3.1.43-windows-x64.exe', 144010345, '3beacc9fb46517f95265323097fc6fe7ab0ce682976000b42eab3c5d808e04aa'),
-              ('agentport-3.1.43-macos-arm64.dmg', 195204808, 'bae5b628cb6f598ce32f6a3a5a6d53f03afb74701b057d9a53d9f5766af45f36'),
-              ('agentport-3.1.43-macos-arm64.zip', 199414707, '2f77fcd4c92c628d0e70ac349d39eac3d401c47429c52f9ad6937907dc9c03c3'),
+              ('agentport-3.1.44-windows-x64.exe', 145443610, 'e5b3fdda616e668ec382018e8e913795e0ead27b00fabc26ba457840b843164d'),
+              ('agentport-3.1.44-macos-arm64.dmg', 195197090, '99fb0576f37bde30d74e6f12f26247a0f090ebc1202b4cd8b9e9c84a1fe18e4d'),
+              ('agentport-3.1.44-macos-arm64.zip', 199414344, '49f0bbe5f9ab5765911a7af4666b06f6f8727dbc353370259f64a53cf1ada094'),
           ]
           headers = {'User-Agent': 'AgentPort-public-download-verifier'}
           for name, expected_size, expected_hash in assets:
@@ -31,22 +31,22 @@ jobs:
                   assert response.status == 200
                   assert int(response.headers['Content-Length']) == expected_size
               print('Anonymous installer link passed:', name, expected_size)
-          with urllib.request.urlopen(urllib.request.Request(base + 'agentport-3.1.43-SHA256SUMS.txt', headers=headers), timeout=30) as response:
+          with urllib.request.urlopen(urllib.request.Request(base + 'agentport-3.1.44-SHA256SUMS.txt', headers=headers), timeout=30) as response:
               checksums = response.read(4096).decode()
           parsed = dict((parts[1], parts[0]) for parts in (line.split() for line in checksums.splitlines() if line.strip()))
           assert parsed == {name: digest for name, size, digest in assets}
           print('Public SHA-256 file matches all three verified installers.')
           page_url = 'https://zuravfx.github.io/AgentPort/'
           for attempt in range(18):
-              with urllib.request.urlopen(urllib.request.Request(page_url + '?release-check=3.1.43', headers=headers), timeout=30) as response:
+              with urllib.request.urlopen(urllib.request.Request(page_url + '?release-check=3.1.44', headers=headers), timeout=30) as response:
                   assert response.status == 200
                   page = response.read(262144).decode()
-              if 'AgentPort 3.1.43' in page and 'every five minutes' in page:
+              if 'AgentPort 3.1.44' in page and '745,560' in page:
                   break
               if attempt == 17:
                   raise AssertionError('The public download page has not deployed the release update.')
               time.sleep(10)
-          for name in ['agentport-3.1.43-windows-x64.exe', 'agentport-3.1.43-macos-arm64.dmg']:
+          for name in ['agentport-3.1.44-windows-x64.exe', 'agentport-3.1.44-macos-arm64.dmg']:
               assert base + name in page
           assert 'agentport-3.1.20-windows-x64.exe' not in page
           assert 'agentport-3.1.22-macos-arm64.dmg' not in page
